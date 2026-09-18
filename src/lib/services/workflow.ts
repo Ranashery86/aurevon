@@ -1,8 +1,8 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
-  getServiceWebhookUrl,
   N8N_WEBHOOK_AUTH_HEADER,
+  SERVICE_WEBHOOK_CONFIG,
 } from "@/lib/services/config";
 import type { ServiceInput } from "@/lib/services/types";
 
@@ -58,6 +58,10 @@ export async function triggerServiceWorkflow(opts: {
     .maybeSingle();
 
   if (serviceError || !service) {
+    console.error(
+      `[service-workflow] service lookup failed: searched services.key = "${serviceKey}", ` +
+        `rows returned = ${service ? 1 : 0}, error = ${serviceError?.message ?? "none"}`
+    );
     return {
       ok: false,
       error: "Service not found or not configured.",
@@ -92,15 +96,35 @@ export async function triggerServiceWorkflow(opts: {
   if (insertError || !request) {
     console.error(
       `[service-workflow] insert failed for ${serviceKey}:`,
-      insertError?.message
+      JSON.stringify({
+        message: insertError?.message,
+        code: insertError?.code,
+        details: insertError?.details,
+        hint: insertError?.hint,
+      }),
+      `\nPayload was:`,
+      JSON.stringify({
+        uuid: userId,
+        service_name: service.name,
+        service_key: serviceKey,
+        status: "processing",
+        input,
+      })
     );
     return { ok: false, error: "Could not create the request.", status: 500 };
   }
 
-  const webhookUrl = getServiceWebhookUrl(serviceKey);
+  const webhookConfig = SERVICE_WEBHOOK_CONFIG[serviceKey];
+  const webhookEnvVar = webhookConfig?.webhookEnvVar;
+  const webhookEnvValue = webhookEnvVar ? process.env[webhookEnvVar] : undefined;
+  const webhookUrl = webhookEnvValue && webhookEnvValue.trim() ? webhookEnvValue : undefined;
+
   if (!webhookUrl) {
     console.error(
-      `[service-workflow] no webhook URL configured for ${serviceKey}`
+      `[service-workflow] webhook not configured for ${serviceKey}: ` +
+        `looked for env var "${webhookEnvVar ?? "(no entry in SERVICE_WEBHOOK_CONFIG)"}", ` +
+        `process.env returned ${webhookEnvValue === undefined ? "undefined" : webhookEnvValue === "" ? "an empty string" : "a value"}. ` +
+        `(Configure it in Vercel and redeploy — value is NOT logged.)`
     );
     await markRequestFailed(admin, request.id, "Webhook not configured");
     return {
