@@ -7,21 +7,6 @@ export type TriggerServiceWorkflowResult =
   | { ok: true; requestId: string }
   | { ok: false; error: string; status: number };
 
-// Credit cost for a service, straight from the services table.
-export async function getServiceCreditCost(
-  serviceKey: string
-): Promise<number | null> {
-  const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("services")
-    .select("credit_cost")
-    .eq("key", serviceKey)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  return Number(data.credit_cost ?? 0);
-}
-
 // Current credit balance, computed the same way as the dashboard
 // (sum of credit_transactions.amount for the user).
 export async function getUserCreditBalance(userId: string): Promise<number> {
@@ -39,6 +24,12 @@ export async function getUserCreditBalance(userId: string): Promise<number> {
 // route so the next two services only need a thin route + a config entry.
 // The webhook URL is read from the services table (webhook_url column), so
 // pointing a service at a different n8n endpoint is a pure data change.
+//
+// Credit cost: a service may override the flat services.credit_cost with a
+// per-request dynamic cost (e.g. Lead Generation charges 1 credit per lead;
+// the route passes creditCostOverride = leads_count). The override is also
+// what the callback uses to deduct.
+//
 // Steps: fetch service row (name, credit_cost, webhook_url) -> validate the
 // URL + auth secret -> re-check balance server-side -> insert a
 // service_requests row (status 'processing') -> fire the n8n webhook
@@ -47,8 +38,9 @@ export async function triggerServiceWorkflow(opts: {
   userId: string;
   serviceKey: string;
   input: ServiceInput;
+  creditCostOverride?: number;
 }): Promise<TriggerServiceWorkflowResult> {
-  const { userId, serviceKey, input } = opts;
+  const { userId, serviceKey, input, creditCostOverride } = opts;
   const admin = createAdminClient();
 
   const { data: service, error: serviceError } = await admin
@@ -69,7 +61,9 @@ export async function triggerServiceWorkflow(opts: {
     };
   }
 
-  const creditCost = Number(service.credit_cost ?? 0);
+  // Cost for this run: explicit per-request override (e.g. number of leads),
+  // otherwise the flat services.credit_cost.
+  const creditCost = creditCostOverride ?? Number(service.credit_cost ?? 0);
   const webhookUrl = service.webhook_url ? service.webhook_url.trim() : "";
 
   // A service row exists but has no webhook_url in the database. This is a

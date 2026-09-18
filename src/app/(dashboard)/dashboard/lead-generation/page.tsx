@@ -13,8 +13,8 @@ const SERVICE_KEY = "lead-generation";
 const fields: ServiceField[] = [
   {
     name: "industry",
-    label: "Industry",
-    placeholder: "e.g. SaaS, dental clinics, logistics",
+    label: "Business Type / Industry",
+    placeholder: "e.g. SaaS companies, dental clinics, logistics",
     required: true,
   },
   {
@@ -24,9 +24,12 @@ const fields: ServiceField[] = [
     required: true,
   },
   {
-    name: "keywords",
-    label: "Keywords",
-    placeholder: "e.g. marketing director, decision maker",
+    name: "leads_count",
+    label: "Number of Leads",
+    type: "number",
+    min: 1,
+    max: 100,
+    defaultValue: 20,
     required: true,
   },
 ];
@@ -36,6 +39,8 @@ const columns: ServiceColumn[] = [
   { key: "company", label: "Company" },
   { key: "contact_info", label: "Contact info" },
   { key: "source", label: "Source" },
+  { key: "address", label: "Address" },
+  { key: "website", label: "Website", type: "link" },
 ];
 
 export default async function LeadGenerationPage() {
@@ -52,7 +57,7 @@ export default async function LeadGenerationPage() {
     await Promise.all([
       supabase
         .from("services")
-        .select("name, credit_cost")
+        .select("name")
         .eq("key", SERVICE_KEY)
         .maybeSingle(),
       supabase
@@ -86,7 +91,8 @@ export default async function LeadGenerationPage() {
       <ServiceWorkflow
         serviceKey={SERVICE_KEY}
         serviceName={service?.name ?? "Lead Generation"}
-        creditCost={Number(service?.credit_cost ?? 0)}
+        creditCost={0}
+        creditCostField="leads_count"
         balance={balance}
         fields={fields}
         columns={columns}
