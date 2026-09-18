@@ -1,18 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { useState } from "react";
 import { card, btnPrimary, muted } from "@/lib/ui";
+import {
+  useServiceRequestHistory,
+  isProcessingRequest,
+  isResolvedRequest,
+} from "@/hooks/use-service-request-history";
+import { HistoryTable, Spinner, UpgradeNotice } from "@/components/service-workflow-shared";
 import type {
   ServiceColumn,
   ServiceField,
   ServiceRequestRow,
   ServiceResultRow,
 } from "@/lib/services/types";
-
-const POLL_INTERVAL_MS = 3500;
-const MAX_POLL_ATTEMPTS = 90;
 
 type ServiceWorkflowProps = {
   serviceKey: string;
@@ -25,13 +26,8 @@ type ServiceWorkflowProps = {
   // When set, the cost of a run is the numeric value of this field
   // (e.g. "leads_count" for Lead Generation: 1 lead = 1 credit).
   creditCostField?: string;
+  buttonLabel?: string;
 };
-
-const isProcessing = (row: ServiceRequestRow | null) =>
-  !!row && (row.status === "processing" || row.status === "pending");
-
-const isResolved = (row: ServiceRequestRow | null) =>
-  !!row && (row.status === "completed" || row.status === "failed");
 
 function getResultRows(output: unknown): ServiceResultRow[] {
   if (Array.isArray(output)) return output as ServiceResultRow[];
@@ -42,42 +38,6 @@ function getResultRows(output: unknown): ServiceResultRow[] {
     }
   }
   return [];
-}
-
-function summarizeInput(
-  input: ServiceRequestRow["input"],
-  fields: ServiceField[]
-): string {
-  if (!input) return "—";
-  const parts = fields
-    .map((field) => {
-      const raw = input[field.name];
-      return raw == null ? "" : String(raw).trim();
-    })
-    .filter((value) => Boolean(value));
-  return parts.length > 0 ? parts.join(" · ") : JSON.stringify(input);
-}
-
-function statusStyles(status: ServiceRequestRow["status"]) {
-  switch (status) {
-    case "completed":
-      return "bg-emerald-50 text-emerald-700 ring-emerald-200";
-    case "failed":
-      return "bg-red-50 text-red-700 ring-red-200";
-    case "processing":
-      return "bg-accent/10 text-accent-deep ring-accent/20";
-    default:
-      return "bg-slate-100 text-slate-600 ring-slate-200";
-  }
-}
-
-function Spinner() {
-  return (
-    <div
-      className="size-5 animate-spin rounded-full border-2 border-accent/30 border-t-accent"
-      aria-hidden
-    />
-  );
 }
 
 function formatUrl(value: unknown): string {
@@ -148,6 +108,7 @@ export function ServiceWorkflow({
   columns,
   history: initialHistory,
   creditCostField,
+  buttonLabel = "Submit",
 }: ServiceWorkflowProps) {
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -160,70 +121,9 @@ export function ServiceWorkflow({
   });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
-  const [activeRequest, setActiveRequest] = useState<ServiceRequestRow | null>(
-    null
-  );
-  const [history, setHistory] = useState<ServiceRequestRow[]>(initialHistory);
 
-  const applyRequest = useCallback((row: ServiceRequestRow) => {
-    setActiveRequest(row);
-    setHistory((previous) => {
-      const index = previous.findIndex((item) => item.id === row.id);
-      if (index === -1) return [row, ...previous];
-      const next = [...previous];
-      next[index] = row;
-      return next;
-    });
-  }, []);
-
-  // Poll the service_requests row until the workflow reaches a terminal state.
-  useEffect(() => {
-    if (!activeRequestId) return;
-
-    const supabase = createClient();
-    let cancelled = false;
-    let attempts = 0;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
-    const stop = () => {
-      if (timer) clearInterval(timer);
-      timer = null;
-    };
-
-    const check = async () => {
-      const { data, error } = await supabase
-        .from("service_requests")
-        .select("*")
-        .eq("id", activeRequestId)
-        .maybeSingle();
-
-      if (cancelled || error || !data) return;
-      applyRequest(data as ServiceRequestRow);
-
-      if (data.status === "completed" || data.status === "failed") {
-        stop();
-      }
-    };
-
-    timer = setInterval(() => {
-      attempts += 1;
-      void check();
-      if (attempts >= MAX_POLL_ATTEMPTS) stop();
-    }, POLL_INTERVAL_MS);
-
-    void check();
-
-    return () => {
-      cancelled = true;
-      stop();
-    };
-  }, [activeRequestId, applyRequest]);
-
-  const openRequest = (row: ServiceRequestRow) => {
-    setActiveRequestId(row.id);
-    applyRequest(row);
-  };
+  const { history, activeRequest, openRequest, launchRequest } =
+    useServiceRequestHistory(initialHistory);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -255,8 +155,7 @@ export function ServiceWorkflow({
         output: null,
         created_at: new Date().toISOString(),
       };
-      setActiveRequestId(body.request_id);
-      applyRequest(optimisticRow);
+      launchRequest(body.request_id, optimisticRow);
     } catch {
       setSubmitError("Network error. Please try again.");
     } finally {
@@ -264,8 +163,6 @@ export function ServiceWorkflow({
     }
   };
 
-  // Live cost: the numeric value of creditCostField when provided, otherwise
-  // the static creditCost prop.
   const requestedCost = creditCostField
     ? Number(values[creditCostField]) || 0
     : creditCost;
@@ -285,8 +182,8 @@ export function ServiceWorkflow({
     return true;
   });
   const submitDisabled = submitting || !canAfford || !formValid;
-  const processing = isProcessing(activeRequest);
-  const resultRows = isResolved(activeRequest)
+  const processing = isProcessingRequest(activeRequest);
+  const resultRows = isResolvedRequest(activeRequest)
     ? getResultRows(activeRequest?.output)
     : [];
 
@@ -344,27 +241,10 @@ export function ServiceWorkflow({
             >
               {submitting
                 ? "Submitting…"
-                : `Submit (costs ${cost} credits)`}
+                : `${buttonLabel} (costs ${cost} credits)`}
             </button>
           ) : (
-            <div className="space-y-3">
-              <button
-                type="button"
-                disabled
-                className={`${btnPrimary} w-full cursor-not-allowed opacity-50`}
-              >
-                Submit (costs {cost} credits)
-              </button>
-              <p className="text-center text-sm text-accent-deep">
-                Not enough credits —{" "}
-                <Link
-                  href="/pricing"
-                  className="font-semibold underline underline-offset-2 hover:text-navy"
-                >
-                  upgrade your plan
-                </Link>
-              </p>
-            </div>
+            <UpgradeNotice cost={cost} />
           )}
 
           {submitError && (
@@ -459,48 +339,7 @@ export function ServiceWorkflow({
           result.
         </p>
 
-        {history.length > 0 ? (
-          <div className="mt-5 overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
-                  <th className="pb-2 pr-4">Input</th>
-                  <th className="pb-2 pr-4">Status</th>
-                  <th className="pb-2">Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((row) => (
-                  <tr
-                    key={row.id}
-                    onClick={() => openRequest(row)}
-                    className="cursor-pointer border-b border-navy/[0.04] transition-colors last:border-0 hover:bg-mist/50"
-                  >
-                    <td className="py-3 pr-4 text-slate-600">
-                      {summarizeInput(row.input, fields)}
-                    </td>
-                    <td className="py-3 pr-4">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${statusStyles(
-                          row.status
-                        )}`}
-                      >
-                        {row.status}
-                      </span>
-                    </td>
-                    <td className="py-3 whitespace-nowrap text-slate-500">
-                      {new Date(row.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className={`mt-4 text-sm ${muted}`}>
-            No requests yet. Your first run will appear here.
-          </p>
-        )}
+        <HistoryTable history={history} fields={fields} onOpen={openRequest} />
       </section>
     </div>
   );

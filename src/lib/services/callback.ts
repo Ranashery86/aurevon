@@ -5,6 +5,7 @@ import {
   N8N_WEBHOOK_AUTH_HEADER,
 } from "@/lib/services/config";
 import { deductCredits } from "@/lib/credits";
+import { getServiceCreditCost } from "@/lib/services/costs";
 import type { ServiceInput } from "@/lib/services/types";
 
 export type WorkflowCallbackPayload = {
@@ -40,32 +41,41 @@ export function authenticateCallback(headers: Headers): {
 }
 
 // # of credits to deduct for a completed run.
-// Priority: the requested quantity in the stored input (1 unit = 1 credit,
-// e.g. leads_count for Lead Generation). Fallback: the service's flat
-// services.credit_cost. Returns null if neither is usable.
+// Priority: resolve the cost from the stored input via the shared per-service
+// resolver (lead-generation → input.leads_count, ai-content-writing →
+// input.length → 2/4/6) so the charge always matches what was quoted at
+// submit time. Fallback: the service's flat services.credit_cost. Returns
+// null if neither is usable.
 async function getDeductionAmount(
   admin: ReturnType<typeof createAdminClient>,
   input: ServiceInput | null,
   serviceKey: string | null
 ): Promise<number | null> {
-  const leadsCount = input?.leads_count;
-  if (leadsCount !== undefined && leadsCount !== null) {
-    const amount = Number(leadsCount);
-    if (Number.isFinite(amount) && amount > 0) {
-      return Math.round(amount);
+  if (serviceKey) {
+    const resolved = getServiceCreditCost(input ?? {}, serviceKey);
+
+    if (resolved !== null) {
+      if (resolved <= 0) {
+        console.error(
+          `[service-callback] resolved a non-positive deduction (${resolved}) for ` +
+            `${serviceKey} — refusing to deduct.`
+        );
+        return null;
+      }
+      return resolved;
     }
+
     console.error(
-      `[service-callback] stored input.leads_count was invalid (${JSON.stringify(
-        leadsCount
-      )}) — falling back to services.credit_cost.`
+      `[service-callback] could not resolve a credit cost from stored input for ` +
+        `${serviceKey} (input=${JSON.stringify(input)}) — falling back to ` +
+        `services.credit_cost.`
     );
   }
 
-  if (!serviceKey) return null;
   const { data } = await admin
     .from("services")
     .select("credit_cost")
-    .eq("key", serviceKey)
+    .eq("key", serviceKey ?? "")
     .maybeSingle();
   const fallback = data ? Number(data.credit_cost ?? 0) : 0;
   return fallback > 0 ? fallback : null;

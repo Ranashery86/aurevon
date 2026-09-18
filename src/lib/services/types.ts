@@ -8,9 +8,14 @@ export type ServiceField = {
   placeholder?: string;
   required?: boolean;
   type?: "text" | "number";
+  // How the field is rendered. text (default), number, textarea or select.
+  control?: "text" | "number" | "textarea" | "select";
   min?: number;
   max?: number;
   defaultValue?: string | number;
+  // For select controls: the choices shown. Also used by the client to seed
+  // the initial value (defaultValue preferred, else the first option).
+  options?: { value: string; label: string }[];
 };
 
 export type ServiceColumn = {

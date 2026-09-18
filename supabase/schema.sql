@@ -309,10 +309,13 @@ values
   ('00000000-0000-0000-0000-000000000012', 'AI Content Writing','ai-content-writing','active')
 on conflict (id) do nothing;
 
--- Per-service credit cost. Each service costs its credit_cost per run.
+-- Per-service credit cost. This is the FALLBACK cost per run; services that
+-- charge dynamically compute their own cost at submit time (Lead Generation
+-- = 1 credit per lead, AI Content Writing = 2/4/6 by Length) and only fall
+-- back to this column when the input can't be resolved.
 update public.services set credit_cost = 10 where key = 'lead-generation';
 update public.services set credit_cost = 5  where key = 'crawler';
-update public.services set credit_cost = 10 where key = 'ai-content-writing';
+update public.services set credit_cost = 4  where key = 'ai-content-writing';
 
 -- ── existing user backfill (safe to re-run) ────────────────────
 -- Grants the Trial plan + starting credits to users who signed up
