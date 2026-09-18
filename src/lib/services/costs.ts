@@ -75,10 +75,20 @@ export function extractUniqueUrls(raw: unknown[]): string[] {
 
 // Credit cost for a crawl run = number of URLs submitted, clamped to the
 // allowed 1–50 range. Returns null when the input isn't a valid URL list
-// (caller falls back to services.credit_cost).
+// (caller falls back to services.credit_cost). Also tolerates the urls value
+// arriving as a JSON-encoded string (defense in depth — the trigger stores a
+// real array, but a future storage layer change must not null out the charge).
 export function getWebsiteCrawlerCost(urls: unknown): number | null {
-  if (!Array.isArray(urls)) return null;
-  const count = urls.length;
+  let list = urls;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const count = list.length;
   if (count < CRAWL_MIN_URLS || count > CRAWL_MAX_URLS) return null;
   return count;
 }

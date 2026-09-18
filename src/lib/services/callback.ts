@@ -41,36 +41,48 @@ export function authenticateCallback(headers: Headers): {
 }
 
 // # of credits to deduct for a completed run.
-// Priority: resolve the cost from the stored input via the shared per-service
-// resolver (lead-generation → input.leads_count, ai-content-writing →
-// input.length → 2/4/6) so the charge always matches what was quoted at
-// submit time. Fallback: the service's flat services.credit_cost. Returns
-// null if neither is usable.
+//
+// The amount is derived ONLY from the ORIGINAL request input stored at submit
+// time (service_requests.input) via getServiceCreditCost() — it is NEVER
+// driven by the shape of the result payload. That keeps deduction correct for
+// every service regardless of what its callback result looks like:
+//   - lead-generation:    input.leads_count  (1 credit per lead)
+//   - ai-content-writing: input.length       (2/4/6)
+//   - website-crawler:    input.urls.length  (1 credit per URL, clamped 1–50)
+// Fallback: the service's flat services.credit_cost. Returns null ONLY when
+// neither source yields a positive amount (which is then logged loudly).
 async function getDeductionAmount(
   admin: ReturnType<typeof createAdminClient>,
   input: ServiceInput | null,
   serviceKey: string | null
 ): Promise<number | null> {
-  if (serviceKey) {
-    const resolved = getServiceCreditCost(input ?? {}, serviceKey);
+  const storedInput = input ?? {};
+  const resolved = serviceKey
+    ? getServiceCreditCost(storedInput, serviceKey)
+    : null;
 
-    if (resolved !== null) {
-      if (resolved <= 0) {
-        console.error(
-          `[service-callback] resolved a non-positive deduction (${resolved}) for ` +
-            `${serviceKey} — refusing to deduct.`
-        );
-        return null;
-      }
-      return resolved;
+  if (resolved !== null) {
+    if (resolved <= 0) {
+      console.error(
+        `[service-callback][deduction] resolved a non-positive deduction (${resolved}) for ` +
+          `${serviceKey} — refusing to deduct.`
+      );
+      return null;
     }
 
-    console.error(
-      `[service-callback] could not resolve a credit cost from stored input for ` +
-        `${serviceKey} (input=${JSON.stringify(input)}) — falling back to ` +
-        `services.credit_cost.`
+    console.log(
+      `[service-callback][deduction] resolved ${resolved} credit(s) for service_key=${serviceKey} ` +
+        `from the ORIGINAL stored input (input=${JSON.stringify(input)}) — ` +
+        `result payload shape was NOT consulted.`
     );
+    return resolved;
   }
+
+  console.error(
+    `[service-callback][deduction] getServiceCreditCost returned null for service_key=` +
+      `${serviceKey} (input=${JSON.stringify(input)}) — falling back to ` +
+      `services.credit_cost.`
+  );
 
   const { data } = await admin
     .from("services")
@@ -78,6 +90,12 @@ async function getDeductionAmount(
     .eq("key", serviceKey ?? "")
     .maybeSingle();
   const fallback = data ? Number(data.credit_cost ?? 0) : 0;
+
+  console.log(
+    `[service-callback][deduction] fallback services.credit_cost for service_key=` +
+      `${serviceKey} = ${fallback}`
+  );
+
   return fallback > 0 ? fallback : null;
 }
 
@@ -139,10 +157,16 @@ export async function handleWorkflowCallback(
 
   // Idempotency guard: n8n may retry the callback. A request that is already
   // terminal is never re-processed, so credits are never double-deducted.
+  // Note: if a PREVIOUS callback attempt marked the request completed but
+  // failed to deduct (e.g. the deduction insert errored before this fix),
+  // this guard intentionally skips it — replaying would risk a double charge.
+  // The fix applies to new requests; old under-charged rows are visible in
+  // the credit_transactions INSERT FAILED logs above.
   if (request.status === "completed" || request.status === "failed") {
     console.warn(
-      `[service-callback] request ${requestId} is already '${request.status}' — ` +
-        `skipping (idempotency). No credits deducted this time.`
+      `[service-callback][deduction] request ${requestId} is already '${request.status}' ` +
+        `(service_key=${request.service_key ?? "unknown"}) — skipping (idempotency). ` +
+        `No credits deducted this time.`
     );
     return { ok: true };
   }
@@ -159,7 +183,18 @@ export async function handleWorkflowCallback(
     return { ok: false, error: updateError.message, status: 500 };
   }
 
+  // Deduction runs for EVERY completed request. It is computed purely from
+  // the ORIGINAL stored input (service_requests.input) via
+  // getServiceCreditCost(service_key, input) and must never depend on the
+  // shape of the result payload (leads array, content string, results array,
+  // or anything a future service sends).
   if (status === "completed") {
+    console.log(
+      `[service-callback][deduction] computing deduction for request ${requestId} ` +
+        `(status=${status}, service_key=${request.service_key ?? "unknown"}, ` +
+        `user=${request.uuid}, input=${JSON.stringify(request.input ?? null)})`
+    );
+
     const charge = await getDeductionAmount(
       admin,
       request.input as ServiceInput | null,
@@ -168,18 +203,16 @@ export async function handleWorkflowCallback(
 
     if (charge === null) {
       console.error(
-        `[service-callback] request ${requestId} completed but no valid deduction ` +
-          `amount was found (input has no leads_count and services.credit_cost is ` +
-          `unset) — NO credits were deducted.`
+        `[service-callback][deduction] NO deduction for completed request ${requestId}: ` +
+          `service_key=${request.service_key ?? "unknown"}, ` +
+          `input=${JSON.stringify(request.input ?? null)} — ` +
+          `getServiceCreditCost() returned null AND services.credit_cost is 0/unset. ` +
+          `Verify getServiceCreditCost() in src/lib/services/costs.ts has a case that ` +
+          `resolves from this input, and that the services row for this key has a ` +
+          `positive credit_cost fallback.`
       );
       return { ok: true };
     }
-
-    console.log(
-      `[service-callback] deducting ${charge} credit(s) for completed request ` +
-        `${requestId} (service=${request.service_key ?? "unknown"}, ` +
-        `user=${request.uuid})`
-    );
 
     try {
       await deductCredits(
@@ -189,14 +222,16 @@ export async function handleWorkflowCallback(
         "deduction"
       );
       console.log(
-        `[service-callback] deduction succeeded: -${charge} credits for request ${requestId}`
+        `[service-callback][deduction] SUCCESS: inserted -${charge} credit_transactions row for ` +
+          `request ${requestId} (service_key=${request.service_key ?? "unknown"}, ` +
+          `user=${request.uuid}). User balance will decrease by ${charge}.`
       );
     } catch (deductError) {
-      // The workflow already finished; a failed deduction (e.g. an un-migrated
-      // database that doesn't allow the 'deduction' type yet) must not block
-      // the callback from marking the request completed.
+      // The workflow already finished; a failed deduction must not block the
+      // callback from marking the request completed. This is logged loudly so
+      // a missed charge is never silent — check Vercel logs for this message.
       console.error(
-        `[service-callback] credit_transactions INSERT FAILED for request ${requestId}:`,
+        `[service-callback][deduction] credit_transactions INSERT FAILED for request ${requestId}:`,
         JSON.stringify({
           message: (deductError as { message?: string }).message,
           code: (deductError as { code?: string }).code,
