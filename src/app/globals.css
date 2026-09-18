@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f1f8;
+  --foreground: #0f2a4a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --color-navy: #0f2a4a;
+  --color-navy-deep: #0a1f36;
+  --color-accent: #ff6b5b;
+  --color-accent-deep: #f25441;
+  --color-mist: #eaf1fb;
+  --color-blush: #fdeeea;
+}
+
+body {
+  background:
+    radial-gradient(1100px 560px at 105% -8%, #ffffff 0%, rgba(234, 241, 251, 0) 55%),
+    linear-gradient(135deg, #eaf1fb 0%, #f3ecf8 48%, #fdeeea 100%);
+  background-attachment: fixed;
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(22px);
+  transition: opacity 0.4s ease-out, transform 0.4s ease-out;
+  will-change: opacity, transform;
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@keyframes nav-in {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.nav-anim {
+  animation: nav-in 0.5s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .nav-anim {
+    animation: none;
+  }
+}
