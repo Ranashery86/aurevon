@@ -1,4 +1,4 @@
-export type ServiceInput = Record<string, string | number>;
+export type ServiceInput = Record<string, string | number | string[]>;
 
 export type ServiceStatus = "pending" | "processing" | "completed" | "failed";
 

@@ -40,19 +40,32 @@ export function summarizeInput(
   return parts.length > 0 ? parts.join(" · ") : JSON.stringify(input);
 }
 
+// Render a stored input value for a history cell. Arrays (e.g. the website
+// crawler's list of URLs) are joined so they read naturally in a table cell.
+function displayInputValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join(", ");
+  return value != null ? String(value) : "—";
+}
+
 // Reusable history table for every service page. Renders one column per
-// field (e.g. industry/location/leads_count, or content type/tone/length)
-// plus status and date; clicking a row re-opens its result.
+// field (e.g. industry/location/leads_count, or content type/tone/length,
+// or the website list) plus status and date; clicking a row re-opens its
+// result. Pass formatCell to override how a specific field's value renders.
 export function HistoryTable({
   history,
   fields,
   onOpen,
   emptyMessage = "No requests yet. Your first run will appear here.",
+  formatCell,
 }: {
   history: ServiceRequestRow[];
   fields: ServiceField[];
   onOpen: (row: ServiceRequestRow) => void;
   emptyMessage?: string;
+  formatCell?: (
+    field: ServiceField,
+    input: ServiceRequestRow["input"]
+  ) => string | null | undefined;
 }) {
   if (history.length === 0) {
     return <p className="mt-4 text-sm text-slate-500">{emptyMessage}</p>;
@@ -81,9 +94,10 @@ export function HistoryTable({
             >
               {fields.map((field) => (
                 <td key={field.name} className="py-3 pr-4 text-slate-600">
-                  {row.input?.[field.name] != null
-                    ? String(row.input[field.name])
-                    : "—"}
+                  {formatCell
+                    ? (formatCell(field, row.input) ??
+                      displayInputValue(row.input?.[field.name]))
+                    : displayInputValue(row.input?.[field.name])}
                 </td>
               ))}
               <td className="py-3 pr-4">

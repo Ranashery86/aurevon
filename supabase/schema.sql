@@ -304,17 +304,23 @@ on conflict (id) do nothing;
 
 insert into public.services (id, name, key, status)
 values
-  ('00000000-0000-0000-0000-000000000010', 'Website Crawler',   'crawler',          'active'),
+  ('00000000-0000-0000-0000-000000000010', 'Website Crawler',   'website-crawler',  'active'),
   ('00000000-0000-0000-0000-000000000011', 'Lead Generation',   'lead-generation',  'active'),
   ('00000000-0000-0000-0000-000000000012', 'AI Content Writing','ai-content-writing','active')
 on conflict (id) do nothing;
 
+-- Migration for existing databases: the crawler service was previously keyed
+-- 'crawler'; the dashboard and trigger routes now use 'website-crawler'.
+update public.services set key = 'website-crawler' where key = 'crawler';
+
 -- Per-service credit cost. This is the FALLBACK cost per run; services that
--- charge dynamically compute their own cost at submit time (Lead Generation
--- = 1 credit per lead, AI Content Writing = 2/4/6 by Length) and only fall
--- back to this column when the input can't be resolved.
+-- charge dynamically compute their own cost at submit time and only fall
+-- back to this column when the input can't be resolved:
+--   lead-generation = 1 credit per lead (leads_count)
+--   ai-content-writing = 2/4/6 by Length
+--   website-crawler = 1 credit per URL (urls.length, clamped 1–50)
 update public.services set credit_cost = 10 where key = 'lead-generation';
-update public.services set credit_cost = 5  where key = 'crawler';
+update public.services set credit_cost = 5  where key = 'website-crawler';
 update public.services set credit_cost = 4  where key = 'ai-content-writing';
 
 -- ── existing user backfill (safe to re-run) ────────────────────

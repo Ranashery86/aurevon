@@ -81,6 +81,34 @@ async function getDeductionAmount(
   return fallback > 0 ? fallback : null;
 }
 
+// Normalize a callback's result into what gets stored in the
+// service_requests.output column. Each service posts a different shape, and
+// it's stored as-is so the UI can read it back:
+//   - lead-generation:     { leads: [...] }
+//   - ai-content-writing:  { content: "<text>" }
+//   - website-crawler:     { results: [...] }   (detected explicitly below)
+export function buildCallbackOutput(
+  status: "completed" | "failed",
+  result: unknown,
+  error?: string
+): unknown {
+  if (status === "failed") {
+    return { error: error ?? "Workflow failed" };
+  }
+
+  // website-crawler: n8n posts { results: Array } — keep it untouched so the
+  // dashboard table can render output.results directly.
+  if (
+    result &&
+    typeof result === "object" &&
+    Array.isArray((result as { results?: unknown }).results)
+  ) {
+    return result;
+  }
+
+  return result ?? null;
+}
+
 // Shared n8n callback handling, used by /api/services/callback for every
 // service: look up the request row -> update status/output -> deduct credits
 // only on a successful run (never on failure).
@@ -119,8 +147,7 @@ export async function handleWorkflowCallback(
     return { ok: true };
   }
 
-  const output =
-    status === "completed" ? (result ?? null) : { error: error ?? "Workflow failed" };
+  const output = buildCallbackOutput(status, result, error);
 
   const { error: updateError } = await admin
     .from("service_requests")

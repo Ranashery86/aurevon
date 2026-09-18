@@ -34,10 +34,60 @@ export function matchChoice<T extends readonly string[]>(
   return allowed.find((option) => option.toLowerCase() === key) ?? null;
 }
 
+// ── Website Crawler ──────────────────────────────────────────────
+// One URL = one credit; every copy of this logic (client live cost, trigger
+// route re-validation, callback deduction) reads from these helpers so the
+// charge can never drift from the quoted amount.
+
+export const CRAWL_MIN_URLS = 1;
+export const CRAWL_MAX_URLS = 50;
+
+// A cell/line "looks like a URL or domain" when it contains a dot and no
+// whitespace. This is the same heuristic used for spreadsheet cells — a
+// value alone on a line (e.g. "example.com") always passes.
+export function looksLikeUrlOrDomain(value: string): boolean {
+  return value.includes(".") && !/\s/.test(value);
+}
+
+// Normalize a single candidate into a usable URL, or null when it isn't one.
+// Missing protocol gets the https:// prefix; dedupe on the normalized value
+// (done by extractUniqueUrls) so "example.com" and "https://example.com"
+// collapse to one URL.
+export function normalizeUrl(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const trimmed = String(value).trim();
+  if (!trimmed || !looksLikeUrlOrDomain(trimmed)) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+// Normalize + dedupe a list of raw candidates into the final URL list.
+// One source of truth shared by the client form and the trigger route.
+export function extractUniqueUrls(raw: unknown[]): string[] {
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const normalized = normalizeUrl(entry);
+    if (normalized !== null && !seen.has(normalized)) {
+      seen.add(normalized);
+    }
+  }
+  return [...seen];
+}
+
+// Credit cost for a crawl run = number of URLs submitted, clamped to the
+// allowed 1–50 range. Returns null when the input isn't a valid URL list
+// (caller falls back to services.credit_cost).
+export function getWebsiteCrawlerCost(urls: unknown): number | null {
+  if (!Array.isArray(urls)) return null;
+  const count = urls.length;
+  if (count < CRAWL_MIN_URLS || count > CRAWL_MAX_URLS) return null;
+  return count;
+}
+
 // Resolve the credit cost of a run from a service's input. Used by the
 // callback to deduct the exact same amount that was quoted at submit time:
 //   - lead-generation: 1 credit per requested lead (input.leads_count)
 //   - ai-content-writing: 2/4/6 credits from input.length
+//   - website-crawler: 1 credit per URL (input.urls), clamped to 1–50
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {
@@ -48,6 +98,8 @@ export function getServiceCreditCost(input: ServiceInput, serviceKey: string): n
     }
     case "ai-content-writing":
       return getAiContentWritingCost(input.length);
+    case "website-crawler":
+      return getWebsiteCrawlerCost(input.urls);
     default:
       return null;
   }
