@@ -33,12 +33,18 @@ create table if not exists public.services (
   status text not null default 'active'
     check (status in ('active', 'coming_soon')),
   credit_cost integer not null default 0,
+  webhook_url text,
   created_at timestamptz not null default now()
 );
 
 -- Migration for existing databases: add credit_cost if missing.
 alter table public.services
   add column if not exists credit_cost integer not null default 0;
+
+-- The n8n trigger webhook URL for this service is stored here (per service_key)
+-- so repointing a service is a pure data change — no redeploy needed.
+alter table public.services
+  add column if not exists webhook_url text;
 
 alter table public.services enable row level security;
 

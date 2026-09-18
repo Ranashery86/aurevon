@@ -5,23 +5,19 @@ import { site } from "@/lib/site";
 //  2. n8n -> this app's /api/services/callback (proves it's really n8n)
 // Header name: x-webhook-auth-token
 // Header value: exactly the raw value of N8N_WEBHOOK_AUTH_TOKEN (no prefix).
+//
+// N8N_WEBHOOK_AUTH_TOKEN is a secret and lives ONLY in the environment
+// (Vercel env vars) — it is never stored in the database.
 export const N8N_WEBHOOK_AUTH_HEADER = "x-webhook-auth-token";
 
-// Per-service trigger webhook configuration. To add a new service, register
-// its service_key here (and its credit_cost in the services table), then
-// point the API route at the shared trigger helper.
-export const SERVICE_WEBHOOK_CONFIG: Record<
-  string,
-  { webhookEnvVar: string }
-> = {
-  "lead-generation": { webhookEnvVar: "N8N_LEAD_GENERATION_WEBHOOK_URL" },
-};
-
-export function getServiceWebhookUrl(serviceKey: string): string | undefined {
-  const config = SERVICE_WEBHOOK_CONFIG[serviceKey];
-  if (!config) return undefined;
-  return process.env[config.webhookEnvVar];
-}
+// Per-service n8n trigger webhook URLs are NOT environment variables. They
+// are stored in the services table (services.webhook_url, per service_key),
+// so repointing a service at a different workflow is a pure Supabase data
+// change — no code change or redeploy required.
+//
+// To add a new service: insert/update its row in `services` with the
+// service_key, credit_cost, and webhook_url, then create a thin API route
+// that calls triggerServiceWorkflow().
 
 // Exact URL n8n should call when a workflow finishes. Mirror this on the
 // n8n side (HTTP Request node added at the end of the workflow).

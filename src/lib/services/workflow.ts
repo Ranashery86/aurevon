@@ -1,9 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
-import {
-  N8N_WEBHOOK_AUTH_HEADER,
-  SERVICE_WEBHOOK_CONFIG,
-} from "@/lib/services/config";
+import { N8N_WEBHOOK_AUTH_HEADER } from "@/lib/services/config";
 import type { ServiceInput } from "@/lib/services/types";
 
 export type TriggerServiceWorkflowResult =
@@ -40,7 +37,10 @@ export async function getUserCreditBalance(userId: string): Promise<number> {
 
 // Shared "trigger a service workflow" pipeline. Used by every service API
 // route so the next two services only need a thin route + a config entry.
-// Steps: fetch credit_cost -> re-check balance server-side -> insert a
+// The webhook URL is read from the services table (webhook_url column), so
+// pointing a service at a different n8n endpoint is a pure data change.
+// Steps: fetch service row (name, credit_cost, webhook_url) -> validate the
+// URL + auth secret -> re-check balance server-side -> insert a
 // service_requests row (status 'processing') -> fire the n8n webhook
 // asynchronously -> return the row id immediately.
 export async function triggerServiceWorkflow(opts: {
@@ -53,7 +53,7 @@ export async function triggerServiceWorkflow(opts: {
 
   const { data: service, error: serviceError } = await admin
     .from("services")
-    .select("name, credit_cost")
+    .select("name, credit_cost, webhook_url")
     .eq("key", serviceKey)
     .maybeSingle();
 
@@ -70,6 +70,40 @@ export async function triggerServiceWorkflow(opts: {
   }
 
   const creditCost = Number(service.credit_cost ?? 0);
+  const webhookUrl = service.webhook_url ? service.webhook_url.trim() : "";
+
+  // A service row exists but has no webhook_url in the database. This is a
+  // data/setup problem, not a missing secret — keep the messages distinct.
+  if (!webhookUrl) {
+    console.error(
+      `[service-workflow] service "${serviceKey}" exists but has no webhook_url ` +
+        `in the services table. Add one via Supabase (services.webhook_url) — ` +
+        `no redeploy needed. Value is NOT logged, only its presence.`
+    );
+    return {
+      ok: false,
+      error: "This service exists but is missing its webhook URL. Please contact support.",
+      status: 500,
+    };
+  }
+
+  // N8N_WEBHOOK_AUTH_TOKEN is a secret and intentionally stays out of the
+  // database. Refuse to fire the webhook without it rather than silently
+  // sending an unauthenticated request.
+  const authToken = process.env.N8N_WEBHOOK_AUTH_TOKEN;
+  if (!authToken) {
+    console.error(
+      `[service-workflow] env var "N8N_WEBHOOK_AUTH_TOKEN" is not set for service ` +
+        `"${serviceKey}" (process.env returned undefined/empty). Configure it in ` +
+        `Vercel and redeploy. Value is NOT logged.`
+    );
+    return {
+      ok: false,
+      error: "Service authentication is not configured. Please contact support.",
+      status: 500,
+    };
+  }
+
   const balance = await getUserCreditBalance(userId);
 
   // Never trust the frontend-disabled button alone — re-check server-side.
@@ -114,28 +148,6 @@ export async function triggerServiceWorkflow(opts: {
     return { ok: false, error: "Could not create the request.", status: 500 };
   }
 
-  const webhookConfig = SERVICE_WEBHOOK_CONFIG[serviceKey];
-  const webhookEnvVar = webhookConfig?.webhookEnvVar;
-  const webhookEnvValue = webhookEnvVar ? process.env[webhookEnvVar] : undefined;
-  const webhookUrl = webhookEnvValue && webhookEnvValue.trim() ? webhookEnvValue : undefined;
-
-  if (!webhookUrl) {
-    console.error(
-      `[service-workflow] webhook not configured for ${serviceKey}: ` +
-        `looked for env var "${webhookEnvVar ?? "(no entry in SERVICE_WEBHOOK_CONFIG)"}", ` +
-        `process.env returned ${webhookEnvValue === undefined ? "undefined" : webhookEnvValue === "" ? "an empty string" : "a value"}. ` +
-        `(Configure it in Vercel and redeploy — value is NOT logged.)`
-    );
-    await markRequestFailed(admin, request.id, "Webhook not configured");
-    return {
-      ok: false,
-      error: "This service is not configured yet.",
-      status: 500,
-    };
-  }
-
-  const authToken = process.env.N8N_WEBHOOK_AUTH_TOKEN;
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -144,7 +156,7 @@ export async function triggerServiceWorkflow(opts: {
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        ...(authToken ? { [N8N_WEBHOOK_AUTH_HEADER]: authToken } : {}),
+        [N8N_WEBHOOK_AUTH_HEADER]: authToken,
       },
       body: JSON.stringify({
         request_id: request.id,
