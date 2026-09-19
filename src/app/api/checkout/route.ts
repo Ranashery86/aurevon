@@ -1,7 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { stripe } from "@/lib/stripe";
-import { site } from "@/lib/site";
+
+// Derive the request origin from the incoming request so success_url/cancel_url
+// point at whatever domain actually served the checkout (localhost in dev, the
+// deployed Vercel domain in prod) even if NEXT_PUBLIC_APP_URL is stale/unset.
+function getRequestOrigin(request: Request): string {
+  const proto = request.headers.get("x-forwarded-proto") ?? "http";
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  if (!host) return "http://localhost:3000";
+  return `${proto.split(",")[0].trim()}://${host.split(",")[0].trim()}`;
+}
 
 export async function POST(request: Request) {
   const { planId } = await request.json().catch(() => ({}));
@@ -44,6 +53,8 @@ export async function POST(request: Request) {
     data: { user },
   } = await admin.auth.admin.getUserById(userId);
 
+  const origin = getRequestOrigin(request);
+
   let session;
   try {
     session = await stripe.checkout.sessions.create({
@@ -62,8 +73,8 @@ export async function POST(request: Request) {
           },
         },
       ],
-      success_url: `${site.url}/dashboard?payment=success`,
-      cancel_url: `${site.url}/pricing?payment=cancelled`,
+      success_url: `${origin}/dashboard?payment=success`,
+      cancel_url: `${origin}/pricing?payment=cancelled`,
       customer_email: user?.email,
       metadata: {
         user_id: userId,
