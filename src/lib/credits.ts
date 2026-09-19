@@ -16,20 +16,39 @@ export async function deductCredits(
   }
 
   const admin = createAdminClient();
+  const payload = {
+    uuid: userId,
+    amount: -amount,
+    type,
+    service_key: serviceKey ?? null,
+  };
+  console.log(
+    `[credits][deduct] inserting into credit_transactions: ${JSON.stringify(payload)}`
+  );
+
   const { data, error } = await admin
     .from("credit_transactions")
-    .insert({
-      uuid: userId,
-      amount: -amount,
-      type,
-      service_key: serviceKey ?? null,
-    })
+    .insert(payload)
     .select("id")
     .single();
 
   if (error) {
+    console.error(
+      `[credits][deduct] credit_transactions INSERT returned an ERROR:`,
+      JSON.stringify({
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+      }),
+      `\nPayload was: ${JSON.stringify(payload)}`
+    );
     throw error;
   }
+
+  console.log(
+    `[credits][deduct] credit_transactions INSERT succeeded — response data: ${JSON.stringify(data)}`
+  );
 
   return data;
 }

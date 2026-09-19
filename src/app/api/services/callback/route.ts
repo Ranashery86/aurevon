@@ -25,6 +25,11 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: "Invalid status" }, { status: 400 });
   }
 
+  console.log(
+    `[service-callback][route] received ${status} callback for request_id=${requestId} — ` +
+      `calling handleWorkflowCallback()`
+  );
+
   const result = await handleWorkflowCallback(payload as {
     request_id: string;
     status: "completed" | "failed";

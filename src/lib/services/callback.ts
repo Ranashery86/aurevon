@@ -58,7 +58,18 @@ async function getDeductionAmount(
 ): Promise<number | null> {
   const storedInput = input ?? {};
   const resolved = serviceKey
-    ? getServiceCreditCost(storedInput, serviceKey)
+    ? (() => {
+      console.log(
+        `[service-callback][deduction] calling getServiceCreditCost(service_key=${serviceKey}, ` +
+          `input=${JSON.stringify(storedInput)})`
+      );
+      const value = getServiceCreditCost(storedInput, serviceKey);
+      console.log(
+        `[service-callback][deduction] getServiceCreditCost() returned ${value} ` +
+          `for service_key=${serviceKey}, input=${JSON.stringify(storedInput)}`
+      );
+      return value;
+    })()
     : null;
 
   if (resolved !== null) {
@@ -84,11 +95,25 @@ async function getDeductionAmount(
       `services.credit_cost.`
   );
 
-  const { data } = await admin
+  const { data, error: fallbackError } = await admin
     .from("services")
     .select("credit_cost")
     .eq("key", serviceKey ?? "")
     .maybeSingle();
+
+  if (fallbackError) {
+    console.error(
+      `[service-callback][deduction] services.credit_cost lookup FAILED for service_key=` +
+        `${serviceKey}:`,
+      JSON.stringify({
+        message: fallbackError.message,
+        code: fallbackError.code,
+        details: fallbackError.details,
+        hint: fallbackError.hint,
+      })
+    );
+  }
+
   const fallback = data ? Number(data.credit_cost ?? 0) : 0;
 
   console.log(
@@ -128,8 +153,11 @@ export function buildCallbackOutput(
 }
 
 // Shared n8n callback handling, used by /api/services/callback for every
-// service: look up the request row -> update status/output -> deduct credits
-// only on a successful run (never on failure).
+// service: look up the request row -> deduct credits on a successful run
+// (never on failure) BEFORE marking the request complete. If the deduction
+// fails, the request stays 'processing' and the callback returns HTTP 500 so
+// n8n sees the failure and can retry — an uncharged run is never delivered as
+// 'completed'.
 export async function handleWorkflowCallback(
   payload: WorkflowCallbackPayload
 ): Promise<WorkflowCallbackResult> {
@@ -157,11 +185,8 @@ export async function handleWorkflowCallback(
 
   // Idempotency guard: n8n may retry the callback. A request that is already
   // terminal is never re-processed, so credits are never double-deducted.
-  // Note: if a PREVIOUS callback attempt marked the request completed but
-  // failed to deduct (e.g. the deduction insert errored before this fix),
-  // this guard intentionally skips it — replaying would risk a double charge.
-  // The fix applies to new requests; old under-charged rows are visible in
-  // the credit_transactions INSERT FAILED logs above.
+  // While a request is 'processing' (the normal state for a first callback or
+  // a retry after a failed deduction), every attempt may legitimately deduct.
   if (request.status === "completed" || request.status === "failed") {
     console.warn(
       `[service-callback][deduction] request ${requestId} is already '${request.status}' ` +
@@ -173,18 +198,8 @@ export async function handleWorkflowCallback(
 
   const output = buildCallbackOutput(status, result, error);
 
-  const { error: updateError } = await admin
-    .from("service_requests")
-    .update({ status, output })
-    .eq("id", requestId);
-
-  if (updateError) {
-    console.error("[service-callback] update failed:", updateError.message);
-    return { ok: false, error: updateError.message, status: 500 };
-  }
-
-  // Deduction runs for EVERY completed request. It is computed purely from
-  // the ORIGINAL stored input (service_requests.input) via
+  // Deduction runs BEFORE the request is marked 'completed'. It is computed
+  // purely from the ORIGINAL stored input (service_requests.input) via
   // getServiceCreditCost(service_key, input) and must never depend on the
   // shape of the result payload (leads array, content string, results array,
   // or anything a future service sends).
@@ -201,6 +216,12 @@ export async function handleWorkflowCallback(
       request.service_key
     );
 
+    console.log(
+      `[service-callback][deduction] resolved charge = ${charge} for request ${requestId} ` +
+        `(service_key=${request.service_key ?? "unknown"}, ` +
+        `input=${JSON.stringify(request.input ?? null)})`
+    );
+
     if (charge === null) {
       console.error(
         `[service-callback][deduction] NO deduction for completed request ${requestId}: ` +
@@ -211,7 +232,11 @@ export async function handleWorkflowCallback(
           `resolves from this input, and that the services row for this key has a ` +
           `positive credit_cost fallback.`
       );
-      return { ok: true };
+      return {
+        ok: false,
+        error: `Credit deduction failed: no charge could be resolved for request ${requestId}.`,
+        status: 500,
+      };
     }
 
     try {
@@ -227,9 +252,6 @@ export async function handleWorkflowCallback(
           `user=${request.uuid}). User balance will decrease by ${charge}.`
       );
     } catch (deductError) {
-      // The workflow already finished; a failed deduction must not block the
-      // callback from marking the request completed. This is logged loudly so
-      // a missed charge is never silent — check Vercel logs for this message.
       console.error(
         `[service-callback][deduction] credit_transactions INSERT FAILED for request ${requestId}:`,
         JSON.stringify({
@@ -246,7 +268,23 @@ export async function handleWorkflowCallback(
           service_key: request.service_key,
         })
       );
+      return {
+        ok: false,
+        error: `Credit deduction failed for request ${requestId}: ` +
+          `${(deductError as { message?: string }).message ?? "unknown error"}`,
+        status: 500,
+      };
     }
+  }
+
+  const { error: updateError } = await admin
+    .from("service_requests")
+    .update({ status, output })
+    .eq("id", requestId);
+
+  if (updateError) {
+    console.error("[service-callback] status update failed:", updateError.message);
+    return { ok: false, error: updateError.message, status: 500 };
   }
 
   return { ok: true };
