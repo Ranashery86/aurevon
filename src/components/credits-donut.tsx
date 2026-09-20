@@ -1,37 +1,50 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { serviceBarColor } from "@/lib/chart-colors";
 
-type CreditsDonutProps = {
-  used: number;
-  remaining: number;
-  total: number;
+type DonutSegment = {
+  name: string;
+  value: number;
 };
 
-export function CreditsDonut({ used, remaining, total }: CreditsDonutProps) {
-  const safeRemaining = Math.max(0, remaining);
-  const data = [
-    { name: "Used", value: Math.max(0, used) },
-    { name: "Remaining", value: safeRemaining },
-  ];
+type CreditsDonutProps = {
+  segments: DonutSegment[];
+  totalUsed: number;
+};
+
+export function CreditsDonut({ segments, totalUsed }: CreditsDonutProps) {
+  // Zero-usage services are dropped so no zero-width slice is rendered.
+  const nonEmpty = segments.filter((segment) => segment.value > 0);
+
+  if (nonEmpty.length === 0) {
+    return (
+      <div className="flex h-72 w-full items-center justify-center">
+        <p className="text-sm text-slate-400">
+          No activity yet. Your service requests will appear here.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
           <Pie
-            data={data}
+            data={nonEmpty}
             dataKey="value"
             nameKey="name"
             cx="50%"
             cy="50%"
             innerRadius={72}
             outerRadius={110}
-            paddingAngle={safeRemaining > 0 ? 2 : 0}
+            paddingAngle={nonEmpty.length > 1 ? 2 : 0}
             stroke="none"
           >
-            <Cell fill="#ff6b5b" />
-            <Cell fill="#e2e8f0" />
+            {nonEmpty.map((segment) => (
+              <Cell key={segment.name} fill={serviceBarColor(segment.name)} />
+            ))}
           </Pie>
           <Tooltip
             formatter={(value) => [`${value} credits`, ""]}
@@ -44,9 +57,9 @@ export function CreditsDonut({ used, remaining, total }: CreditsDonutProps) {
         </PieChart>
       </ResponsiveContainer>
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-        <p className="text-3xl font-bold text-slate-900">{safeRemaining}</p>
+        <p className="text-3xl font-bold text-slate-900">{totalUsed}</p>
         <p className="text-xs font-medium text-slate-500">
-          of {total} credits remaining
+          credits used this cycle
         </p>
       </div>
     </div>

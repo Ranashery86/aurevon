@@ -84,7 +84,13 @@ export default async function DashboardHomePage({
   if (otherUsed > 0) {
     usageChartData.push({ name: "Other", used: otherUsed });
   }
-  const donutRemaining = Math.max(0, totalCredits - usedCredits);
+  const donutSegments = Array.from(usedByService, ([name, used]) => ({
+    name,
+    value: used,
+  }));
+  if (otherUsed > 0) {
+    donutSegments.push({ name: "Other", value: otherUsed });
+  }
 
   return (
     <div className="space-y-6">
@@ -235,11 +241,7 @@ export default async function DashboardHomePage({
         <h2 className="mb-4 text-sm font-bold uppercase tracking-wider text-navy">
           Service usage breakdown
         </h2>
-        <CreditsDonut
-          used={usedCredits}
-          remaining={donutRemaining}
-          total={totalCredits}
-        />
+        <CreditsDonut segments={donutSegments} totalUsed={usedCredits} />
       </section>
 
       <section className="rounded-2xl bg-white p-6 shadow-[0_24px_48px_-24px_rgba(15,42,74,0.18)] ring-1 ring-navy/[0.05]">
