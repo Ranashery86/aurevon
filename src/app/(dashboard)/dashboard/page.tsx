@@ -57,9 +57,6 @@ export default async function DashboardHomePage({
   );
   const remainingCredits = balance;
 
-  const isTrialOrNoPlan = !plan || String(plan.name).toLowerCase().includes("trial");
-  const showUpgradePrompt = isTrialOrNoPlan && remainingCredits <= 0;
-
   const paymentPending = paymentSuccess && !sub;
 
   const progressPercent =
@@ -127,14 +124,12 @@ export default async function DashboardHomePage({
               {plan?.name ?? "No plan"}
             </p>
           </div>
-          {showUpgradePrompt && (
-            <Link
-              href="/pricing"
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition-colors hover:bg-accent-deep"
-            >
-              Upgrade your plan
-            </Link>
-          )}
+          <Link
+            href="/pricing"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition-colors hover:bg-accent-deep"
+          >
+            Upgrade Plan
+          </Link>
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">

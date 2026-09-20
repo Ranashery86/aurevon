@@ -4,11 +4,13 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { serviceBarColor } from "@/lib/chart-colors";
 
 type UsageBarChartProps = {
   data: { name: string; used: number }[];
@@ -42,7 +44,11 @@ export function UsageBarChart({ data }: UsageBarChartProps) {
               fontSize: 13,
             }}
           />
-          <Bar dataKey="used" fill="#ff6b5b" radius={[8, 8, 0, 0]} maxBarSize={56} />
+          <Bar dataKey="used" radius={[8, 8, 0, 0]} maxBarSize={56}>
+            {data.map((entry) => (
+              <Cell key={entry.name} fill={serviceBarColor(entry.name)} />
+            ))}
+          </Bar>
         </BarChart>
       </ResponsiveContainer>
     </div>
