@@ -88,9 +88,9 @@ create policy "Users can insert their own requests"
   for insert
   with check (auth.uid() = uuid);
 
--- ── subscription ──────────────────────────────────────────────
+-- ── subscriptions ──────────────────────────────────────────────
 -- One row per user, representing their current plan subscription.
-create table if not exists public.subscription (
+create table if not exists public.subscriptions (
   id uuid primary key default gen_random_uuid(),
   uuid uuid not null references auth.users(id) on delete cascade,
   plan_id uuid not null references public.plans(id),
@@ -100,11 +100,11 @@ create table if not exists public.subscription (
   updated_at timestamptz not null default now()
 );
 
-alter table public.subscription enable row level security;
+alter table public.subscriptions enable row level security;
 
-drop policy if exists "Users can read their own subscriptions" on public.subscription;
+drop policy if exists "Users can read their own subscriptions" on public.subscriptions;
 create policy "Users can read their own subscriptions"
-  on public.subscription
+  on public.subscriptions
   for select
   using (auth.uid() = uuid);
 
@@ -196,7 +196,7 @@ create policy "Users can update their own profile"
 
 -- Deleting a profile row deletes the auth account too. auth.users has
 -- ON DELETE CASCADE FKs, so sessions, refresh tokens, identities,
--- subscription, credit_transactions and service_requests are removed
+-- subscriptions, credit_transactions and service_requests are removed
 -- together with it.
 create or replace function public.handle_profile_delete()
 returns trigger
@@ -274,7 +274,7 @@ begin
   end if;
 
   if v_trial_id is not null then
-    insert into public.subscription (uuid, plan_id, status)
+    insert into public.subscriptions (uuid, plan_id, status)
     values (new.id, v_trial_id, 'active');
 
     insert into public.credit_transactions (uuid, amount, type)
@@ -333,20 +333,20 @@ select u.id, coalesce(u.raw_user_meta_data ->> 'name', ''), u.email
 from auth.users u
 on conflict (uuid) do nothing;
 
-insert into public.subscription (uuid, plan_id, status)
+insert into public.subscriptions (uuid, plan_id, status)
 select u.id, tp.id, 'active'
 from auth.users u
 cross join lateral (
   select id from public.plans where price = 0 order by monthly_credits desc limit 1
 ) tp
 where not exists (
-  select 1 from public.subscription s
+  select 1 from public.subscriptions s
   where s.uuid = u.id and s.status = 'active'
 );
 
 insert into public.credit_transactions (uuid, amount, type)
 select s.uuid, p.monthly_credits, 'plan_purchase'
-from public.subscription s
+from public.subscriptions s
 join public.plans p on p.id = s.plan_id
 where p.price = 0
 and not exists (
