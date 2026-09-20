@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   }
 
   const { data: existing } = await admin
-    .from("subscriptions")
+    .from("subscription")
     .select("id")
     .eq("uuid", userId)
     .eq("status", "active")
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     return Response.json({ success: true, alreadyActive: true });
   }
 
-  const { error: subError } = await admin.from("subscriptions").insert({
+  const { error: subError } = await admin.from("subscription").insert({
     uuid: userId,
     plan_id: targetPlanId,
     status: "active",

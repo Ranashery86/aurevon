@@ -36,7 +36,7 @@ export default async function DashboardHomePage({
         .eq("status", "active")
         .order("name"),
       supabase
-        .from("subscriptions")
+        .from("subscription")
         .select("id, status, plan_id, plans(id, name, monthly_credits)")
         .eq("uuid", userId)
         .eq("status", "active")
