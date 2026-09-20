@@ -10,14 +10,23 @@ type DonutSegment = {
 
 type CreditsDonutProps = {
   segments: DonutSegment[];
-  totalUsed: number;
+  totalCredits: number;
+  usedCredits: number;
 };
 
-export function CreditsDonut({ segments, totalUsed }: CreditsDonutProps) {
-  // Zero-usage services are dropped so no zero-width slice is rendered.
-  const nonEmpty = segments.filter((segment) => segment.value > 0);
+// Light neutral for the "Remaining" slice, matching the original 2-segment
+// donut's remaining color. Never used for a service slice.
+const REMAINING_COLOR = "#e2e8f0";
 
-  if (nonEmpty.length === 0) {
+export function CreditsDonut({
+  segments,
+  totalCredits,
+  usedCredits,
+}: CreditsDonutProps) {
+  // Services with zero usage are dropped so no zero-width slice is rendered.
+  const usedSegments = segments.filter((segment) => segment.value > 0);
+
+  if (usedSegments.length === 0) {
     return (
       <div className="flex h-72 w-full items-center justify-center">
         <p className="text-sm text-slate-400">
@@ -27,23 +36,36 @@ export function CreditsDonut({ segments, totalUsed }: CreditsDonutProps) {
     );
   }
 
+  const remaining = Math.max(0, totalCredits - usedCredits);
+  const chartData = [
+    ...usedSegments,
+    ...(remaining > 0 ? [{ name: "Remaining", value: remaining }] : []),
+  ];
+
   return (
     <div className="relative h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
           <Pie
-            data={nonEmpty}
+            data={chartData}
             dataKey="value"
             nameKey="name"
             cx="50%"
             cy="50%"
             innerRadius={72}
             outerRadius={110}
-            paddingAngle={nonEmpty.length > 1 ? 2 : 0}
+            paddingAngle={chartData.length > 1 ? 2 : 0}
             stroke="none"
           >
-            {nonEmpty.map((segment) => (
-              <Cell key={segment.name} fill={serviceBarColor(segment.name)} />
+            {chartData.map((segment) => (
+              <Cell
+                key={segment.name}
+                fill={
+                  segment.name === "Remaining"
+                    ? REMAINING_COLOR
+                    : serviceBarColor(segment.name)
+                }
+              />
             ))}
           </Pie>
           <Tooltip
@@ -57,9 +79,9 @@ export function CreditsDonut({ segments, totalUsed }: CreditsDonutProps) {
         </PieChart>
       </ResponsiveContainer>
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-        <p className="text-3xl font-bold text-slate-900">{totalUsed}</p>
+        <p className="text-3xl font-bold text-slate-900">{remaining}</p>
         <p className="text-xs font-medium text-slate-500">
-          credits used this cycle
+          of {totalCredits} credits remaining
         </p>
       </div>
     </div>
