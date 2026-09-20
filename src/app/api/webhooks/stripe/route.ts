@@ -52,15 +52,17 @@ export async function POST(request: NextRequest) {
 
   const session = event.data.object as Stripe.Checkout.Session;
 
-  // Only grant the plan + credits when the subscription checkout is actually
-  // paid. Anything else is not an error — retrying the same event would not
-  // change the outcome — so log it loudly and acknowledge with 200.
-  if (session.mode !== "subscription" || session.payment_status !== "paid") {
+  // Option A: Checkout is created with mode: "payment" (one-time charge). Grant
+  // the plan + credits only when that one-time checkout is actually paid.
+  // Anything else is not an error — retrying the same event would not change
+  // the outcome — so log it loudly and acknowledge with 200. Option B (true
+  // recurring subscriptions with automatic renewal-credit top-ups) would
+  // change this guard to mode: "subscription" and add an
+  // invoice.payment_succeeded handler for monthly renewal credits — not built.
+  if (session.mode !== "payment" || session.payment_status !== "paid") {
     console.log(
       `[stripe-webhook] ignoring session ${session.id}: mode=${session.mode}, ` +
-        `payment_status=${session.payment_status} — only paid subscription checkouts grant credits. ` +
-        `If this was an async/off-session payment, credits will also arrive via ` +
-        `checkout.session.async_payment_succeeded (not handled here yet).`
+        `payment_status=${session.payment_status} — only paid one-time checkouts grant credits.`
     );
     return Response.json({ received: true });
   }

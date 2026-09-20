@@ -58,7 +58,13 @@ export async function POST(request: Request) {
   let session;
   try {
     session = await stripe.checkout.sessions.create({
-      mode: "subscription",
+      // Option A: one-time payment per plan purchase. Credits are granted to
+      // the user's balance once per successful payment; they re-purchase when
+      // they want more. Option B (true monthly recurring subscriptions with
+      // automatic renewal-credit top-ups) can be built later when recurring
+      // billing is needed — that would use mode: "subscription" with a
+      // recurring price and an invoice.payment_succeeded handler.
+      mode: "payment",
       line_items: [
         {
           quantity: 1,
@@ -67,9 +73,8 @@ export async function POST(request: Request) {
             unit_amount: amountCents,
             product_data: {
               name: plan.name,
-              description: `${plan.monthly_credits} monthly credits`,
+              description: `${plan.monthly_credits} credits`,
             },
-            recurring: { interval: "month" },
           },
         },
       ],
