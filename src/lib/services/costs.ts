@@ -94,21 +94,27 @@ export function getWebsiteCrawlerCost(urls: unknown): number | null {
 }
 
 // ── Site Health & AI Audit ──────────────────────────────────────
-// Cost = the selected audit depth (1 credit per page audited). Only the
-// exact tier sizes below are valid; a manipulated client request claiming
-// any other number gets null (so it falls back to services.credit_cost).
+// Cost = per-tier page rate × page count. Only the exact tier sizes below are
+// valid; a manipulated client request claiming any other number gets null
+// (so it falls back to services.credit_cost):
+//   Quick    (5 pages)  × 2 credits/page =  10 credits
+//   Standard (15 pages) × 4 credits/page =  60 credits
+//   Deep     (30 pages) × 6 credits/page = 180 credits
 
-export const SITE_HEALTH_MAX_PAGES = [5, 15, 30] as const;
+export const SITE_AUDIT_TIERS: Record<number, { pages: number; ratePerPage: number }> = {
+  5: { pages: 5, ratePerPage: 2 },
+  15: { pages: 15, ratePerPage: 4 },
+  30: { pages: 30, ratePerPage: 6 },
+};
 
-// Accepts a max_pages value ONLY when it is exactly 5, 15, or 30. Anything
-// else (including a fake "cheaper tier" number) returns null — the caller
-// then falls back to the service's flat services.credit_cost (15).
+// Accepts a max_pages value ONLY when it is exactly 5, 15, or 30 (the three
+// tier sizes). Any other value — including a fake "cheaper tier" number —
+// returns null, so the caller falls back to services.credit_cost (15). The
+// returned cost is pages × ratePerPage for the matched tier.
 export function getSiteHealthAuditCost(maxPages: unknown): number | null {
-  const value = Number(maxPages);
-  if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
-  return (SITE_HEALTH_MAX_PAGES as readonly number[]).includes(value)
-    ? value
-    : null;
+  const mp = Number(maxPages);
+  const tier = SITE_AUDIT_TIERS[mp];
+  return tier ? tier.pages * tier.ratePerPage : null;
 }
 
 // Resolve the credit cost of a run from a service's input. Used by the
@@ -116,7 +122,7 @@ export function getSiteHealthAuditCost(maxPages: unknown): number | null {
 //   - lead-generation:    1 credit per requested lead (input.leads_count)
 //   - ai-content-writing: 2/4/6 credits from input.length
 //   - website-crawler:    1 credit per URL (input.urls), clamped to 1–50
-//   - site-health-audit:  5/15/30 credits from input.max_pages (audit depth)
+//   - site-health-audit:  10/60/180 credits from input.max_pages (audit depth)
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {

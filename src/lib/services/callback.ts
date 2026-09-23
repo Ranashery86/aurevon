@@ -49,7 +49,7 @@ export function authenticateCallback(headers: Headers): {
 //   - lead-generation:    input.leads_count  (1 credit per lead)
 //   - ai-content-writing: input.length       (2/4/6)
 //   - website-crawler:    input.urls.length  (1 credit per URL, clamped 1–50)
-//   - site-health-audit:  input.max_pages    (5/15/30 — audit depth)
+//   - site-health-audit:  input.max_pages    (10/60/180 by audit depth)
 // Fallback: the service's flat services.credit_cost. Returns null ONLY when
 // neither source yields a positive amount (which is then logged loudly).
 async function getDeductionAmount(

@@ -2,7 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { card, btnPrimary, btnSecondary, btnNavy, muted } from "@/lib/ui";
-import { getSiteHealthAuditCost } from "@/lib/services/costs";
+import {
+  getSiteHealthAuditCost,
+  looksLikeUrlOrDomain,
+  normalizeUrl,
+} from "@/lib/services/costs";
 import {
   useServiceRequestHistory,
   isProcessingRequest,
@@ -447,8 +451,15 @@ export function SiteHealthAuditWorkflow({
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!url.trim()) return;
     if (getSiteHealthAuditCost(tier) === null) return;
+
+    // Accept a full URL or a bare domain; normalize before submitting so the
+    // workflow always receives a fetchable https:// URL.
+    const siteUrl = normalizeUrl(url.trim());
+    if (siteUrl === null) {
+      setSubmitError("Please enter a valid website URL or domain.");
+      return;
+    }
 
     setSubmitError(null);
     setSubmitting(true);
@@ -457,7 +468,7 @@ export function SiteHealthAuditWorkflow({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          input: { url: url.trim(), max_pages: tier },
+          input: { url: siteUrl, max_pages: tier },
         }),
       });
       const body = (await response.json().catch(() => ({}))) as {
@@ -476,7 +487,7 @@ export function SiteHealthAuditWorkflow({
         service_name: serviceName,
         service_key: serviceKey,
         status: "processing",
-        input: { url: url.trim(), max_pages: tier },
+        input: { url: siteUrl, max_pages: tier },
         output: null,
         created_at: new Date().toISOString(),
       });
@@ -487,8 +498,14 @@ export function SiteHealthAuditWorkflow({
     }
   };
 
+  const trimmedUrl = url.trim();
+  const urlError =
+    trimmedUrl && !looksLikeUrlOrDomain(trimmedUrl)
+      ? "Please enter a valid URL or domain (e.g. example.com or https://example.com)."
+      : null;
   const hasResult = output !== null && isResolvedRequest(activeRequest) && activeRequest?.status === "completed";
-  const submitDisabled = submitting || !canAfford || !url.trim();
+  const submitDisabled =
+    submitting || !canAfford || !trimmedUrl || !!urlError;
 
   return (
     <div className="space-y-6">
@@ -498,7 +515,8 @@ export function SiteHealthAuditWorkflow({
           Input
         </h2>
         <p className={`mt-1 text-sm ${muted}`}>
-          Audit a website for SEO health and AI readiness (1 credit per page).
+          Audit a website for SEO health and AI readiness. Pricing scales with
+          audit depth (10 / 60 / 180 credits).
         </p>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-5">
@@ -511,14 +529,21 @@ export function SiteHealthAuditWorkflow({
             </label>
             <input
               id="url"
-              type="url"
+              type="text"
               name="url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://example.com"
+              placeholder="https://example.com or example.com"
               required
-              className="w-full rounded-xl border border-navy/10 bg-white px-4 py-2.5 text-sm text-navy placeholder:text-slate-400 focus:border-accent focus:outline-none"
+              className={`w-full rounded-xl border bg-white px-4 py-2.5 text-sm text-navy placeholder:text-slate-400 focus:border-accent focus:outline-none ${
+                urlError ? "border-red-300 ring-1 ring-red-200" : "border-navy/10"
+              }`}
             />
+            {urlError && (
+              <p className="mt-1.5 text-sm font-medium text-red-700">
+                {urlError}
+              </p>
+            )}
           </div>
 
           <div>
@@ -544,7 +569,7 @@ export function SiteHealthAuditWorkflow({
                       {option.label}
                     </span>
                     <span className="block text-xs text-slate-500">
-                      {option.pages} pages ({option.pages} credits)
+                      {option.pages} pages ({getSiteHealthAuditCost(option.pages)} credits)
                     </span>
                   </button>
                 );
