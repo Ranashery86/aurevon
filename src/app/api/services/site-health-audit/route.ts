@@ -1,8 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { triggerServiceWorkflow } from "@/lib/services/workflow";
 import {
+  SITE_AUDIT_MIN_URLS,
+  SITE_AUDIT_MAX_URLS,
+  extractUniqueUrls,
   getSiteHealthAuditCost,
-  normalizeUrl,
 } from "@/lib/services/costs";
 
 export async function POST(request: Request) {
@@ -17,23 +19,42 @@ export async function POST(request: Request) {
 
   const userId = claims.claims.sub as string;
 
-  // Single target URL, normalized server-side (adds https:// when missing)
-  // so the workflow always receives a fetchable URL.
-  const url = normalizeUrl((input ?? {}).url);
-  if (url === null) {
+  // Target URLs are re-derived server-side: each entry is normalized
+  // (adds https:// when missing) and the list is de-duplicated, so the
+  // workflow always receives fetchable, distinct URLs.
+  const rawUrls = (input ?? {}).urls;
+  if (!Array.isArray(rawUrls)) {
     return Response.json(
-      { error: "A valid website URL is required." },
+      { error: '"urls" must be provided as an array of website URLs.' },
       { status: 400 }
     );
   }
 
-  // Audit depth is recomputed server-side from max_pages and must be exactly
-  // 5, 15, or 30. A client-sent cost is never trusted — only the tier value
-  // itself determines the charge (1 credit per page).
-  const maxPages = getSiteHealthAuditCost((input ?? {}).max_pages);
-  if (maxPages === null) {
+  const urls = extractUniqueUrls(rawUrls);
+
+  if (urls.length < SITE_AUDIT_MIN_URLS) {
     return Response.json(
-      { error: '"max_pages" must be exactly 5, 15, or 30.' },
+      { error: `At least ${SITE_AUDIT_MIN_URLS} website URL is required.` },
+      { status: 400 }
+    );
+  }
+
+  if (urls.length > SITE_AUDIT_MAX_URLS) {
+    return Response.json(
+      {
+        error: `No more than ${SITE_AUDIT_MAX_URLS} websites can be audited in a single run (${urls.length} provided).`,
+      },
+      { status: 400 }
+    );
+  }
+
+  // Cost is recomputed server-side from the URL count (15 credits per URL).
+  // A client-sent cost is never trusted — only the validated URL list
+  // itself determines the charge.
+  const cost = getSiteHealthAuditCost(urls);
+  if (cost === null) {
+    return Response.json(
+      { error: "Invalid URL list provided." },
       { status: 400 }
     );
   }
@@ -41,8 +62,8 @@ export async function POST(request: Request) {
   const result = await triggerServiceWorkflow({
     userId,
     serviceKey: "site-health-audit",
-    input: { url, max_pages: maxPages },
-    creditCostOverride: maxPages,
+    input: { urls },
+    creditCostOverride: cost,
   });
 
   if (!result.ok) {

@@ -320,7 +320,7 @@ update public.services set key = 'website-crawler' where key = 'crawler';
 --   lead-generation = 1 credit per lead (leads_count)
 --   ai-content-writing = 2/4/6 by Length
 --   website-crawler = 1 credit per URL (urls.length, clamped 1–50)
---   site-health-audit = 5/15/30 by audit depth (max_pages)
+--   site-health-audit = 15 per URL (urls.length × 15, clamped 1–10)
 update public.services set credit_cost = 10 where key = 'lead-generation';
 update public.services set credit_cost = 5  where key = 'website-crawler';
 update public.services set credit_cost = 4  where key = 'ai-content-writing';

@@ -49,7 +49,7 @@ export function authenticateCallback(headers: Headers): {
 //   - lead-generation:    input.leads_count  (1 credit per lead)
 //   - ai-content-writing: input.length       (2/4/6)
 //   - website-crawler:    input.urls.length  (1 credit per URL, clamped 1–50)
-//   - site-health-audit:  input.max_pages    (10/60/180 by audit depth)
+//   - site-health-audit:  input.urls.length × 15 (clamped to 1–10 URLs)
 // Fallback: the service's flat services.credit_cost. Returns null ONLY when
 // neither source yields a positive amount (which is then logged loudly).
 async function getDeductionAmount(
@@ -131,8 +131,9 @@ async function getDeductionAmount(
 //   - lead-generation:     { leads: [...] }
 //   - ai-content-writing:  { content: "<text>" }
 //   - website-crawler:     { results: [...] }   (detected explicitly below)
-//   - site-health-audit:   { scores, site_level, structured_data,
-//                           js_rendering_risk, pages } (detected explicitly)
+//   - site-health-audit:   { results: [...] }   (one entry per audited URL —
+//                         each with status "completed"|"failed", plus the
+//                         scores/site_level/... for completed sites)
 export function buildCallbackOutput(
   status: "completed" | "failed",
   result: unknown,
@@ -146,23 +147,11 @@ export function buildCallbackOutput(
   if (result && typeof result === "object") {
     const candidate = result as Record<string, unknown>;
 
-    // website-crawler: n8n posts { results: Array } — keep it untouched so the
-    // dashboard table can render output.results directly.
+    // website-crawler + site-health-audit: n8n posts { results: Array } —
+    // keep it untouched so the dashboard can render output.results directly
+    // (crawler rows as { url, emails, phones, ... }, audit rows as
+    // { url, status, scores, site_level, ... }).
     if (Array.isArray(candidate.results)) {
-      return result;
-    }
-
-    // site-health-audit: n8n posts the full report object — detected via the
-    // scores key (with seo_score, ai_readiness_score, overall_score) and
-    // stored as-is so the dashboard can render each section verbatim.
-    const scores = candidate.scores;
-    const isAuditScores =
-      scores != null &&
-      typeof scores === "object" &&
-      "seo_score" in scores &&
-      "ai_readiness_score" in scores &&
-      "overall_score" in scores;
-    if (isAuditScores) {
       return result;
     }
   }

@@ -94,27 +94,33 @@ export function getWebsiteCrawlerCost(urls: unknown): number | null {
 }
 
 // ── Site Health & AI Audit ──────────────────────────────────────
-// Cost = per-tier page rate × page count. Only the exact tier sizes below are
-// valid; a manipulated client request claiming any other number gets null
-// (so it falls back to services.credit_cost):
-//   Quick    (5 pages)  × 2 credits/page =  10 credits
-//   Standard (15 pages) × 4 credits/page =  60 credits
-//   Deep     (30 pages) × 6 credits/page = 180 credits
+// Cost = 15 credits per audited site; every URL runs a heavy 15-page audit
+// (PageSpeed + broken-link checks), so the cap is lower than the crawler's.
+// Only the 1–10 URL range is valid; a manipulated client request claiming
+// any other count gets null (falls back to services.credit_cost).
 
-export const SITE_AUDIT_TIERS: Record<number, { pages: number; ratePerPage: number }> = {
-  5: { pages: 5, ratePerPage: 2 },
-  15: { pages: 15, ratePerPage: 4 },
-  30: { pages: 30, ratePerPage: 6 },
-};
+export const SITE_AUDIT_RATE_PER_URL = 15;
+export const SITE_AUDIT_MIN_URLS = 1;
+export const SITE_AUDIT_MAX_URLS = 10;
 
-// Accepts a max_pages value ONLY when it is exactly 5, 15, or 30 (the three
-// tier sizes). Any other value — including a fake "cheaper tier" number —
-// returns null, so the caller falls back to services.credit_cost (15). The
-// returned cost is pages × ratePerPage for the matched tier.
-export function getSiteHealthAuditCost(maxPages: unknown): number | null {
-  const mp = Number(maxPages);
-  const tier = SITE_AUDIT_TIERS[mp];
-  return tier ? tier.pages * tier.ratePerPage : null;
+// Credit cost for an audit run = number of sites × rate per URL, clamped to
+// the allowed 1–10 range. Returns null when the input isn't a valid URL list
+// (caller falls back to services.credit_cost). Also tolerates the urls value
+// arriving as a JSON-encoded string (defense in depth — the trigger stores a
+// real array, but a future storage layer change must not null out the charge).
+export function getSiteHealthAuditCost(urls: unknown): number | null {
+  let list = urls;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const count = list.length;
+  if (count < SITE_AUDIT_MIN_URLS || count > SITE_AUDIT_MAX_URLS) return null;
+  return count * SITE_AUDIT_RATE_PER_URL;
 }
 
 // Resolve the credit cost of a run from a service's input. Used by the
@@ -122,7 +128,7 @@ export function getSiteHealthAuditCost(maxPages: unknown): number | null {
 //   - lead-generation:    1 credit per requested lead (input.leads_count)
 //   - ai-content-writing: 2/4/6 credits from input.length
 //   - website-crawler:    1 credit per URL (input.urls), clamped to 1–50
-//   - site-health-audit:  10/60/180 credits from input.max_pages (audit depth)
+//   - site-health-audit:  15 credits per URL (input.urls), clamped to 1–10
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {
@@ -136,7 +142,7 @@ export function getServiceCreditCost(input: ServiceInput, serviceKey: string): n
     case "website-crawler":
       return getWebsiteCrawlerCost(input.urls);
     case "site-health-audit":
-      return getSiteHealthAuditCost(input.max_pages);
+      return getSiteHealthAuditCost(input.urls);
     default:
       return null;
   }

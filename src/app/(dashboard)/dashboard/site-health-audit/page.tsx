@@ -11,8 +11,8 @@ const SERVICE_KEY = "site-health-audit";
 
 const fields: ServiceField[] = [
   {
-    name: "url",
-    label: "Website URL",
+    name: "urls",
+    label: "Websites",
     required: true,
   },
 ];
@@ -57,8 +57,8 @@ export default async function SiteHealthAuditPage() {
           {service?.name ?? "Site Health & AI Audit"}
         </h1>
         <p className={`mt-1 text-sm ${muted}`}>
-          Audit a website for SEO health and AI-readiness (5, 15, or 30
-          credits by audit depth).
+          Audit 1–10 websites for SEO health and AI-readiness (15 credits per
+          URL).
         </p>
       </div>
 

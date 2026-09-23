@@ -1,11 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { card, btnPrimary, btnSecondary, btnNavy, muted } from "@/lib/ui";
 import {
+  SITE_AUDIT_MIN_URLS,
+  SITE_AUDIT_MAX_URLS,
+  SITE_AUDIT_RATE_PER_URL,
+  extractUniqueUrls,
   getSiteHealthAuditCost,
   looksLikeUrlOrDomain,
-  normalizeUrl,
 } from "@/lib/services/costs";
 import {
   useServiceRequestHistory,
@@ -23,11 +27,13 @@ import type {
   ServiceResultRow,
 } from "@/lib/services/types";
 
-const TIERS = [
-  { pages: 5, label: "Quick" },
-  { pages: 15, label: "Standard" },
-  { pages: 30, label: "Deep" },
+const FILE_EXTENSIONS = ["xlsx", "xls", "csv"];
+const MODES = [
+  { id: "manual", label: "Manual Entry" },
+  { id: "upload", label: "Upload Excel/CSV" },
 ] as const;
+
+type Mode = (typeof MODES)[number]["id"];
 
 type SiteHealthAuditWorkflowProps = {
   serviceKey: string;
@@ -46,15 +52,25 @@ type AiBotAccessRow = {
 
 type PageRow = ServiceResultRow;
 
-type SiteHealthOutput = {
+// One entry per submitted URL. Completed sites carry the full report; failed
+// entries only carry { url, status: "failed", error }.
+type SiteResult = {
+  url?: unknown;
+  status?: unknown;
   scores?: Record<string, unknown> | null;
   site_level?: Record<string, unknown> | null;
   structured_data?: Record<string, unknown> | null;
   js_rendering_risk?: unknown;
   pages?: unknown[];
+  error?: unknown;
+};
+
+type SiteHealthOutput = {
+  results?: SiteResult[];
 };
 
 const PAGE_CSV_COLUMNS: { key: string; label: string }[] = [
+  { key: "site", label: "Site" },
   { key: "url", label: "URL" },
   { key: "title", label: "Title" },
   { key: "meta_description_status", label: "Meta Description" },
@@ -195,6 +211,20 @@ function cellText(value: unknown): string {
   return joined === "" ? "—" : joined;
 }
 
+function isCompletedSite(site: SiteResult): boolean {
+  return String(site.status ?? "").toLowerCase() === "completed";
+}
+
+function siteTabLabel(url: unknown): string {
+  const text = String(url ?? "").trim();
+  if (!text) return "Site";
+  try {
+    return new URL(text).hostname || text;
+  } catch {
+    return text;
+  }
+}
+
 function downloadCsv(rows: PageRow[], columns: { key: string; label: string }[], filename: string) {
   const escape = (value: unknown) => {
     const text = cellText(value);
@@ -226,18 +256,22 @@ function esc(value: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildReportHtml(
-  siteUrl: string,
-  scores: Record<string, unknown> | null | undefined,
-  siteLevel: Record<string, unknown> | null | undefined,
-  structuredData: Record<string, unknown> | null | undefined,
-  jsRisk: string | null,
-  botAccess: AiBotAccessRow[],
-  pages: PageRow[]
-): string {
+function buildSiteBlockHtml(site: SiteResult): string {
+  const scores = site.scores ?? null;
   const seo = toNumber(scores?.seo_score);
   const ai = toNumber(scores?.ai_readiness_score);
   const overall = toNumber(scores?.overall_score);
+  const hasSiteLevel = site.site_level != null && typeof site.site_level === "object";
+  const siteLevel = hasSiteLevel ? (site.site_level as Record<string, unknown>) : null;
+  const structuredData =
+    site.structured_data != null && typeof site.structured_data === "object"
+      ? (site.structured_data as Record<string, unknown>)
+      : null;
+  const jsRisk = typeof site.js_rendering_risk === "string" ? site.js_rendering_risk : null;
+  const botAccess: AiBotAccessRow[] = Array.isArray(siteLevel?.ai_bot_access)
+    ? (siteLevel.ai_bot_access as AiBotAccessRow[])
+    : [];
+  const pages: PageRow[] = Array.isArray(site.pages) ? (site.pages as PageRow[]) : [];
 
   const seoRow = (score: number | null, label: string) => {
     const tone = scoreTone(score);
@@ -287,7 +321,72 @@ function buildReportHtml(
     )
     .join("");
 
-  const hasSiteLevel = !!siteLevel && typeof siteLevel === "object";
+  return `
+    <div class="site-block">
+      <div class="site-title">${esc(cellText(site.url))}</div>
+
+      <div class="section">
+        <div class="section-title">Scores</div>
+        <div class="cards">
+          ${seoRow(seo, "SEO Score")}
+          ${seoRow(ai, "AI Readiness Score")}
+          ${seoRow(overall, "Overall Score")}
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Site-level signals</div>
+        <div class="indicator-row">
+          <div class="indicator"><strong>llms.txt</strong>${esc(siteLevel && siteLevel.llms_txt_found === true ? "Found" : siteLevel ? "Not Found" : "—")}</div>
+          <div class="indicator"><strong>sitemap.xml</strong>${esc(siteLevel && siteLevel.sitemap_found === true ? "Found" : siteLevel ? "Not Found" : "—")}</div>
+          <div class="indicator"><strong>robots.txt</strong>${esc(siteLevel && siteLevel.robots_txt_found === true ? "Found" : siteLevel ? "Not Found" : "—")}</div>
+          <div class="indicator"><strong>JS Rendering Risk</strong>${esc(jsRisk ?? "—")}</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Structured data</div>
+        <div class="indicator-row">
+          <div class="indicator"><strong>Types found</strong>${esc(joinList(structuredData?.types_found, "None found"))}</div>
+          <div class="indicator"><strong>Organization schema</strong>${esc(structuredData?.organization_schema_complete === true ? "Complete" : "Incomplete")}</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">AI bot access</div>
+        ${
+          botRows
+            ? `<table><thead><tr><th>Bot</th><th>Operator</th><th>Purpose</th><th>Status</th></tr></thead><tbody>${botRows}</tbody></table>`
+            : `<div class="no-data">No AI bot access data available.</div>`
+        }
+      </div>
+
+      <div class="section">
+        <div class="section-title">Pages (${pages.length})</div>
+        ${
+          pageRows
+            ? `<table><thead><tr><th>URL</th><th>Title</th><th>Meta Description</th><th>H1</th><th>Alt-Text %</th><th>Word Count</th><th>Load Time</th><th>Broken Links</th><th>Issues</th></tr></thead><tbody>${pageRows}</tbody></table>`
+            : `<div class="no-data">No page-level data available.</div>`
+        }
+      </div>
+    </div>`;
+}
+
+function buildPdfHtml(results: SiteResult[]): string {
+  const completed = results.filter(isCompletedSite);
+  const overallScores = completed
+    .map((site) => toNumber(site.scores?.overall_score))
+    .filter((num): num is number => num !== null);
+  const avg =
+    overallScores.length > 0
+      ? overallScores.reduce((sum, num) => sum + num, 0) / overallScores.length
+      : null;
+  const summary =
+    `${completed.length} of ${results.length} sites audited successfully` +
+    (avg !== null && completed.length > 1
+      ? ` · Average Overall Score: ${Math.round(avg)}`
+      : "");
+  const blocks = completed.map(buildSiteBlockHtml).join("");
 
   return `<!doctype html>
 <html lang="en">
@@ -299,6 +398,9 @@ function buildReportHtml(
   body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #0f2a4a; margin: 0; padding: 40px; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .meta { color: #64748b; font-size: 13px; margin-bottom: 28px; }
+  .site-block { margin-bottom: 36px; }
+  .site-block:last-child { margin-bottom: 0; }
+  .site-title { font-size: 18px; font-weight: 800; color: #10b3a3; margin-bottom: 18px; }
   .section { margin-bottom: 28px; }
   .section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 12px; }
   .cards { display: flex; gap: 16px; }
@@ -321,74 +423,257 @@ function buildReportHtml(
 </head>
 <body>
   <h1>Site Health &amp; AI Readiness Audit</h1>
-  <div class="meta">${esc(siteUrl)} &middot; Generated ${new Date().toLocaleString()}</div>
+  <div class="meta">${esc(summary)} &middot; Generated ${new Date().toLocaleString()}</div>
 
-  <div class="section">
-    <div class="section-title">Scores</div>
-    <div class="cards">
-      ${seoRow(seo, "SEO Score")}
-      ${seoRow(ai, "AI Readiness Score")}
-      ${seoRow(overall, "Overall Score")}
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Site-level signals</div>
-    <div class="indicator-row">
-      <div class="indicator"><strong>llms.txt</strong>${esc(hasSiteLevel ? (siteLevel.llms_txt_found === true ? "Found" : "Not Found") : "—")}</div>
-      <div class="indicator"><strong>sitemap.xml</strong>${esc(hasSiteLevel ? (siteLevel.sitemap_found === true ? "Found" : "Not Found") : "—")}</div>
-      <div class="indicator"><strong>robots.txt</strong>${esc(hasSiteLevel ? (siteLevel.robots_txt_found === true ? "Found" : "Not Found") : "—")}</div>
-      <div class="indicator"><strong>JS Rendering Risk</strong>${esc(jsRisk ?? "—")}</div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Structured data</div>
-    <div class="indicator-row">
-      <div class="indicator"><strong>Types found</strong>${esc(joinList(structuredData?.types_found, "None found"))}</div>
-      <div class="indicator"><strong>Organization schema</strong>${esc(structuredData?.organization_schema_complete === true ? "Complete" : "Incomplete")}</div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">AI bot access</div>
-    ${
-      botRows
-        ? `<table><thead><tr><th>Bot</th><th>Operator</th><th>Purpose</th><th>Status</th></tr></thead><tbody>${botRows}</tbody></table>`
-        : `<div class="no-data">No AI bot access data available.</div>`
-    }
-  </div>
-
-  <div class="section">
-    <div class="section-title">Pages (${pages.length})</div>
-    ${
-      pageRows
-        ? `<table><thead><tr><th>URL</th><th>Title</th><th>Meta Description</th><th>H1</th><th>Alt-Text %</th><th>Word Count</th><th>Load Time</th><th>Broken Links</th><th>Issues</th></tr></thead><tbody>${pageRows}</tbody></table>`
-        : `<div class="no-data">No page-level data available.</div>`
-    }
-  </div>
+  ${blocks}
 </body>
 </html>`;
 }
 
-function downloadPdfReport(siteUrl: string, output: SiteHealthOutput) {
-  const html = buildReportHtml(
-    siteUrl,
-    output.scores,
-    output.site_level,
-    output.structured_data,
-    typeof output.js_rendering_risk === "string" ? output.js_rendering_risk : null,
-    Array.isArray(output.site_level?.ai_bot_access)
-      ? (output.site_level.ai_bot_access as AiBotAccessRow[])
-      : [],
-    Array.isArray(output.pages) ? (output.pages as PageRow[]) : []
-  );
+function downloadPdfReport(output: SiteHealthOutput) {
+  const html = buildPdfHtml(output.results ?? []);
   const win = window.open("", "_blank");
   if (!win) return;
   win.document.write(html);
   win.document.close();
   win.focus();
   setTimeout(() => win.print(), 300);
+}
+
+function SiteReport({ site }: { site: SiteResult }) {
+  const scores = site.scores ?? null;
+  const seoScore = toNumber(scores?.seo_score);
+  const aiScore = toNumber(scores?.ai_readiness_score);
+  const overallScore = toNumber(scores?.overall_score);
+  const siteLevel =
+    site.site_level && typeof site.site_level === "object"
+      ? (site.site_level as Record<string, unknown>)
+      : null;
+  const structuredData =
+    site.structured_data && typeof site.structured_data === "object"
+      ? (site.structured_data as Record<string, unknown>)
+      : null;
+  const jsRisk =
+    typeof site.js_rendering_risk === "string" ? site.js_rendering_risk : null;
+  const botAccess: AiBotAccessRow[] = Array.isArray(siteLevel?.ai_bot_access)
+    ? (siteLevel.ai_bot_access as AiBotAccessRow[])
+    : [];
+  const pages: PageRow[] = Array.isArray(site.pages) ? (site.pages as PageRow[]) : [];
+  const typesFound = joinList(structuredData?.types_found, "None found");
+  const orgComplete = structuredData?.organization_schema_complete === true;
+
+  return (
+    <div className="space-y-8">
+      {/* Scores */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <ScoreCard label="SEO Score" value={seoScore} />
+        <ScoreCard label="AI Readiness Score" value={aiScore} />
+        <ScoreCard label="Overall Score" value={overallScore} />
+      </div>
+
+      {/* AI Bot Access */}
+      <div>
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+          AI Bot Access
+        </h3>
+        {botAccess.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <th className="pb-2 pr-4">Bot</th>
+                  <th className="pb-2 pr-4">Operator</th>
+                  <th className="pb-2 pr-4">Purpose</th>
+                  <th className="pb-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {botAccess.map((row, index) => (
+                  <tr
+                    key={index}
+                    className="border-b border-navy/[0.04] last:border-0"
+                  >
+                    <td className="py-2.5 pr-4 font-medium text-navy">
+                      {cellText(row.bot)}
+                    </td>
+                    <td className="py-2.5 pr-4 text-slate-600">
+                      {cellText(row.operator)}
+                    </td>
+                    <td className="py-2.5 pr-4 text-slate-600">
+                      {cellText(row.purpose)}
+                    </td>
+                    <td className="py-2.5">
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${botStatusTone(
+                          botStatusLabel(row.status)
+                        )}`}
+                      >
+                        {botStatusLabel(row.status)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">
+            No AI bot access data available.
+          </p>
+        )}
+      </div>
+
+      {/* Site-level indicators */}
+      {siteLevel && (
+        <div className="flex flex-wrap items-center gap-6">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              llms.txt
+            </p>
+            <div className="mt-1">
+              <FoundBadge found={siteLevel.llms_txt_found === true} />
+            </div>
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              sitemap.xml
+            </p>
+            <div className="mt-1">
+              <FoundBadge found={siteLevel.sitemap_found === true} />
+            </div>
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              robots.txt
+            </p>
+            <div className="mt-1">
+              <FoundBadge found={siteLevel.robots_txt_found === true} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Structured data + JS risk */}
+      <div className="flex flex-wrap items-center gap-6">
+        {structuredData && (
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Structured data
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Types found:{" "}
+              <span className="font-semibold text-navy">{typesFound}</span>
+            </p>
+            <div className="mt-1.5">
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
+                  orgComplete
+                    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                    : "bg-yellow-50 text-yellow-700 ring-yellow-200"
+                }`}
+              >
+                Organization schema: {orgComplete ? "Complete" : "Incomplete"}
+              </span>
+            </div>
+          </div>
+        )}
+        {jsRisk && (
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              JS rendering risk
+            </p>
+            <div className="mt-1.5">
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${riskTone(
+                  jsRisk
+                )}`}
+              >
+                {jsRisk.charAt(0).toUpperCase() + jsRisk.slice(1).toLowerCase()}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Per-page table */}
+      <div>
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+          Pages ({pages.length})
+        </h3>
+        {pages.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <th className="pb-2 pr-4">URL</th>
+                  <th className="pb-2 pr-4">Title</th>
+                  <th className="pb-2 pr-4">Meta Description</th>
+                  <th className="pb-2 pr-4">H1</th>
+                  <th className="pb-2 pr-4">Alt-Text %</th>
+                  <th className="pb-2 pr-4">Word Count</th>
+                  <th className="pb-2 pr-4">Load Time</th>
+                  <th className="pb-2 pr-4">Broken Links</th>
+                  <th className="pb-2">Issues</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pages.map((row, index) => (
+                  <tr
+                    key={index}
+                    className="border-b border-navy/[0.04] last:border-0"
+                  >
+                    <td className="max-w-56 py-2.5 pr-4 align-top">
+                      {row.url ? (
+                        <a
+                          href={formatUrl(row.url)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="break-words text-accent-deep underline underline-offset-2 hover:text-navy"
+                        >
+                          {cellText(row.url)}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="max-w-56 py-2.5 pr-4 align-top text-slate-600">
+                      {cellText(row.title)}
+                    </td>
+                    <td className="max-w-48 py-2.5 pr-4 align-top text-slate-600">
+                      {cellText(row.meta_description_status)}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-slate-600">
+                      {formatH1(row.h1_count)}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-slate-600">
+                      {formatPercent(row.alt_text_percentage)}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-slate-600">
+                      {formatCount(row.word_count)}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top whitespace-nowrap text-slate-600">
+                      {formatLoadTime(row.load_time_ms)}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-slate-600">
+                      {cellText(row.broken_links_found)}
+                    </td>
+                    <td
+                      className="max-w-72 py-2.5 align-top text-slate-600"
+                      title={joinList(row.issues, "")}
+                    >
+                      {joinList(row.issues)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">No page-level data available.</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function SiteHealthAuditWorkflow({
@@ -398,50 +683,62 @@ export function SiteHealthAuditWorkflow({
   fields,
   history: initialHistory,
 }: SiteHealthAuditWorkflowProps) {
-  const [url, setUrl] = useState("");
-  const [tier, setTier] = useState<number>(15);
+  const [mode, setMode] = useState<Mode>("manual");
+  const [manualText, setManualText] = useState("");
+  const [uploadedCells, setUploadedCells] = useState<string[]>([]);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [activeSiteIndex, setActiveSiteIndex] = useState(0);
+  const [lastLoadedRequestId, setLastLoadedRequestId] = useState<string | null>(null);
 
   const { history, activeRequest, openRequest, launchRequest } =
     useServiceRequestHistory(initialHistory);
 
-  const cost = getSiteHealthAuditCost(tier) ?? 0;
+  // Raw list becomes URLs: duplicates collapse, each entry is normalized
+  // (https:// added when missing), and the list is de-duplicated — mirroring
+  // the server-side re-validation in the trigger route.
+  const urls = useMemo(() => {
+    const raw = mode === "manual" ? manualText.split(/\r?\n/) : uploadedCells;
+    return extractUniqueUrls(raw);
+  }, [mode, manualText, uploadedCells]);
+
+  const cost = getSiteHealthAuditCost(urls) ?? 0;
   const canAfford = balance >= cost;
+  const overLimit = urls.length > SITE_AUDIT_MAX_URLS;
   const isBusy = submitting || isProcessingRequest(activeRequest);
 
   const output: SiteHealthOutput | null = useMemo(() => {
     if (!activeRequest || !isResolvedRequest(activeRequest)) return null;
     const raw = activeRequest.output;
     if (!raw || typeof raw !== "object") return null;
-    return raw as SiteHealthOutput;
+    const obj = raw as { results?: unknown };
+    return Array.isArray(obj.results) ? (obj as SiteHealthOutput) : null;
   }, [activeRequest]);
 
-  const scores = output?.scores ?? null;
-  const seoScore = toNumber(scores?.seo_score);
-  const aiScore = toNumber(scores?.ai_readiness_score);
-  const overallScore = toNumber(scores?.overall_score);
-  const siteLevel =
-    output?.site_level && typeof output.site_level === "object"
-      ? output.site_level
-      : null;
-  const structuredData =
-    output?.structured_data && typeof output.structured_data === "object"
-      ? output.structured_data
-      : null;
-  const jsRisk =
-    typeof output?.js_rendering_risk === "string"
-      ? output.js_rendering_risk
-      : null;
-  const botAccess: AiBotAccessRow[] = Array.isArray(siteLevel?.ai_bot_access)
-    ? (siteLevel.ai_bot_access as AiBotAccessRow[])
-    : [];
-  const pages: PageRow[] = Array.isArray(output?.pages)
-    ? (output.pages as PageRow[])
-    : [];
+  // Reset to the first site's tab whenever a (re)loaded request resolves.
+  if (
+    activeRequest &&
+    isResolvedRequest(activeRequest) &&
+    lastLoadedRequestId !== activeRequest.id
+  ) {
+    setActiveSiteIndex(0);
+    setLastLoadedRequestId(activeRequest.id);
+  }
 
-  const typesFound = joinList(structuredData?.types_found, "None found");
-  const orgComplete = structuredData?.organization_schema_complete === true;
+  const results: SiteResult[] = output?.results ?? [];
+  const completedResults = results.filter(isCompletedSite);
+  const overallScores = completedResults
+    .map((site) => toNumber(site.scores?.overall_score))
+    .filter((num): num is number => num !== null);
+  const avgOverall =
+    overallScores.length > 0
+      ? overallScores.reduce((sum, num) => sum + num, 0) / overallScores.length
+      : null;
+  const siteIndex = Math.min(activeSiteIndex, Math.max(0, results.length - 1));
+  const activeSite = results[siteIndex] ?? null;
+  const activeSiteFailed = !!activeSite && !isCompletedSite(activeSite);
 
   const failedMessage =
     activeRequest?.status === "failed"
@@ -449,17 +746,59 @@ export function SiteHealthAuditWorkflow({
         "This request failed. No result was generated.")
       : null;
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (getSiteHealthAuditCost(tier) === null) return;
-
-    // Accept a full URL or a bare domain; normalize before submitting so the
-    // workflow always receives a fetchable https:// URL.
-    const siteUrl = normalizeUrl(url.trim());
-    if (siteUrl === null) {
-      setSubmitError("Please enter a valid website URL or domain.");
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    const valid = FILE_EXTENSIONS.some((ext) => lower.endsWith(`.${ext}`));
+    if (!valid) {
+      setParseError("Unsupported file type. Please upload an .xlsx, .xls, or .csv file.");
       return;
     }
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const cells: string[] = [];
+
+      for (const sheetName of workbook.SheetNames) {
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
+          workbook.Sheets[sheetName],
+          { defval: "" }
+        );
+        for (const row of rows) {
+          for (const value of Object.values(row)) {
+            const text = String(value ?? "").trim();
+            if (text && looksLikeUrlOrDomain(text)) cells.push(text);
+          }
+        }
+      }
+
+      if (cells.length === 0) {
+        setParseError("No valid URLs or domains found in the file.");
+        return;
+      }
+
+      setUploadedCells(cells);
+      setFileName(file.name);
+      setParseError(null);
+    } catch {
+      setParseError("Could not read that file. Please check the format and try again.");
+    }
+  };
+
+  const resetFileInput = (event: React.MouseEvent<HTMLButtonElement>) => {
+    setUploadedCells([]);
+    setFileName(null);
+    setParseError(null);
+    const input = document.getElementById("site-audit-file-input") as HTMLInputElement | null;
+    if (input) input.value = "";
+    event.currentTarget.blur();
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (urls.length < SITE_AUDIT_MIN_URLS || urls.length > SITE_AUDIT_MAX_URLS) return;
 
     setSubmitError(null);
     setSubmitting(true);
@@ -467,9 +806,7 @@ export function SiteHealthAuditWorkflow({
       const response = await fetch(`/api/services/${serviceKey}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input: { url: siteUrl, max_pages: tier },
-        }),
+        body: JSON.stringify({ input: { urls } }),
       });
       const body = (await response.json().catch(() => ({}))) as {
         request_id?: string;
@@ -487,7 +824,7 @@ export function SiteHealthAuditWorkflow({
         service_name: serviceName,
         service_key: serviceKey,
         status: "processing",
-        input: { url: siteUrl, max_pages: tier },
+        input: { urls },
         output: null,
         created_at: new Date().toISOString(),
       });
@@ -498,14 +835,19 @@ export function SiteHealthAuditWorkflow({
     }
   };
 
-  const trimmedUrl = url.trim();
-  const urlError =
-    trimmedUrl && !looksLikeUrlOrDomain(trimmedUrl)
-      ? "Please enter a valid URL or domain (e.g. example.com or https://example.com)."
-      : null;
-  const hasResult = output !== null && isResolvedRequest(activeRequest) && activeRequest?.status === "completed";
+  const hasResult = output !== null;
   const submitDisabled =
-    submitting || !canAfford || !trimmedUrl || !!urlError;
+    submitting || !canAfford || overLimit || urls.length < SITE_AUDIT_MIN_URLS;
+
+  const downloadAllCsv = () => {
+    const rows: PageRow[] = completedResults.flatMap((site) =>
+      (Array.isArray(site.pages) ? (site.pages as PageRow[]) : []).map((row) => ({
+        site: site.url,
+        ...row,
+      }))
+    );
+    downloadCsv(rows, PAGE_CSV_COLUMNS, `${serviceName} pages`);
+  };
 
   return (
     <div className="space-y-6">
@@ -515,88 +857,132 @@ export function SiteHealthAuditWorkflow({
           Input
         </h2>
         <p className={`mt-1 text-sm ${muted}`}>
-          Audit a website for SEO health and AI readiness. Pricing scales with
-          audit depth (10 / 60 / 180 credits).
+          Audit 1–{SITE_AUDIT_MAX_URLS} websites for SEO health and AI readiness —
+          {SITE_AUDIT_RATE_PER_URL} credits per URL. Every site is audited at{" "}
+          {SITE_AUDIT_RATE_PER_URL} pages depth and you can review each report
+          after the run completes.
         </p>
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-5">
-          <div>
-            <label
-              htmlFor="url"
-              className="mb-1.5 block text-sm font-semibold text-navy"
-            >
-              Website URL
-            </label>
-            <input
-              id="url"
-              type="text"
-              name="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://example.com or example.com"
-              required
-              className={`w-full rounded-xl border bg-white px-4 py-2.5 text-sm text-navy placeholder:text-slate-400 focus:border-accent focus:outline-none ${
-                urlError ? "border-red-300 ring-1 ring-red-200" : "border-navy/10"
-              }`}
-            />
-            {urlError && (
-              <p className="mt-1.5 text-sm font-medium text-red-700">
-                {urlError}
-              </p>
-            )}
+        <div className="mt-5">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {MODES.map((option) => {
+              const active = option.id === mode;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setMode(option.id)}
+                  aria-pressed={active}
+                  className={`rounded-xl border px-4 py-2.5 text-left text-sm font-bold transition-colors ${
+                    active
+                      ? "border-navy bg-navy text-white"
+                      : "border-navy/10 bg-white text-navy hover:bg-mist"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
           </div>
 
-          <div>
-            <span className="mb-1.5 block text-sm font-semibold text-navy">
-              Audit depth
-            </span>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {TIERS.map((option) => {
-                const active = option.pages === tier;
-                return (
+          <div className="mt-4">
+            {mode === "manual" ? (
+              <div>
+                <label
+                  htmlFor="site-audit-urls"
+                  className="mb-1.5 block text-sm font-semibold text-navy"
+                >
+                  Websites (one per line)
+                </label>
+                <textarea
+                  id="site-audit-urls"
+                  rows={5}
+                  value={manualText}
+                  onChange={(event) => setManualText(event.target.value)}
+                  placeholder={`example.com\nhttps://another-site.com\nthird-site.io`}
+                  className="w-full resize-y rounded-xl border border-navy/10 bg-white px-4 py-2.5 font-mono text-sm text-navy placeholder:text-slate-400 focus:border-accent focus:outline-none"
+                />
+              </div>
+            ) : (
+              <div>
+                <input
+                  id="site-audit-file-input"
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                {uploadedCells.length > 0 ? (
+                  <div className="rounded-xl border border-navy/10 bg-mist/40 px-4 py-3">
+                    <p className="text-sm font-semibold text-navy">{fileName}</p>
+                    <p className="mt-0.5 text-sm text-slate-500">
+                      {uploadedCells.length} URL{uploadedCells.length === 1 ? "" : "s"} found
+                    </p>
+                    <button
+                      type="button"
+                      onClick={resetFileInput}
+                      className={`${btnSecondary} mt-2 px-3 py-1.5 text-xs`}
+                    >
+                      Remove file
+                    </button>
+                  </div>
+                ) : (
                   <button
-                    key={option.pages}
                     type="button"
-                    onClick={() => setTier(option.pages)}
-                    aria-pressed={active}
-                    className={`rounded-xl border px-4 py-3 text-left transition-colors ${
-                      active
-                        ? "border-accent bg-accent/10 ring-1 ring-accent/40"
-                        : "border-navy/10 bg-white hover:bg-mist"
-                    }`}
+                    onClick={() => {
+                      const input = document.getElementById("site-audit-file-input") as HTMLInputElement | null;
+                      input?.click();
+                    }}
+                    className={`${btnSecondary} w-full px-4 py-3 text-sm`}
                   >
-                    <span className="block text-sm font-bold text-navy">
-                      {option.label}
-                    </span>
-                    <span className="block text-xs text-slate-500">
-                      {option.pages} pages ({getSiteHealthAuditCost(option.pages)} credits)
-                    </span>
+                    Choose file (.xlsx, .xls, or .csv)
                   </button>
-                );
-              })}
-            </div>
+                )}
+              </div>
+            )}
+
+            {parseError && (
+              <p className="mt-2 text-sm font-medium text-red-700">{parseError}</p>
+            )}
+
+            <p className="mt-3 text-sm font-semibold text-accent-deep">
+              {urls.length} URLs found · {cost} credits (
+              {SITE_AUDIT_RATE_PER_URL} credits × {urls.length} URLs)
+            </p>
           </div>
 
-          {canAfford ? (
-            <button
-              type="submit"
-              disabled={submitDisabled}
-              className={`${btnPrimary} w-full disabled:cursor-not-allowed disabled:opacity-50`}
-            >
-              {submitting
-                ? "Submitting…"
-                : `Run Audit (${cost} credits)`}
-            </button>
-          ) : (
-            <UpgradeNotice cost={cost} />
-          )}
-
-          {submitError && (
-            <p className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
-              {submitError}
+          {!overLimit && !parseError && urls.length < SITE_AUDIT_MIN_URLS && (
+            <p className="mt-2 text-sm text-slate-500">
+              Add at least {SITE_AUDIT_MIN_URLS} URL to continue.
             </p>
           )}
-        </form>
+          {overLimit && (
+            <p className="mt-2 text-sm font-medium text-red-700">
+              Up to {SITE_AUDIT_MAX_URLS} URLs are allowed per run. Please remove{" "}
+              {urls.length - SITE_AUDIT_MAX_URLS} to continue.
+            </p>
+          )}
+
+          <form onSubmit={handleSubmit} className="mt-5 space-y-5">
+            {canAfford ? (
+              <button
+                type="submit"
+                disabled={submitDisabled}
+                className={`${btnPrimary} w-full disabled:cursor-not-allowed disabled:opacity-50`}
+              >
+                {submitting ? "Submitting…" : `Run Audit (${cost} credits)`}
+              </button>
+            ) : (
+              <UpgradeNotice cost={cost} />
+            )}
+
+            {submitError && (
+              <p className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
+                {submitError}
+              </p>
+            )}
+          </form>
+        </div>
       </section>
 
       {/* ── Output panel ────────────────────────────────────────── */}
@@ -605,25 +991,18 @@ export function SiteHealthAuditWorkflow({
           <h2 className="text-sm font-bold uppercase tracking-wider text-navy">
             Output
           </h2>
-          {hasResult && (
+          {hasResult && completedResults.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() =>
-                  downloadPdfReport(
-                    String(activeRequest?.input?.url ?? ""),
-                    output as SiteHealthOutput
-                  )
-                }
+                onClick={() => downloadPdfReport(output as SiteHealthOutput)}
                 className={`${btnNavy} px-4 py-2 text-xs`}
               >
                 Download PDF Report
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  downloadCsv(pages, PAGE_CSV_COLUMNS, `${serviceName} pages`)
-                }
+                onClick={downloadAllCsv}
                 className={`${btnSecondary} px-4 py-2 text-xs`}
               >
                 Download CSV
@@ -637,8 +1016,9 @@ export function SiteHealthAuditWorkflow({
             <Spinner />
             <p className="text-sm font-semibold text-navy">Auditing…</p>
             <p className="text-sm text-slate-500">
-              Your site is being audited. Results usually appear within a few
-              minutes.
+              {urls.length > 1
+                ? `${urls.length} sites are being audited. Results usually appear within a few minutes.`
+                : "Your site is being audited. Results usually appear within a few minutes."}
             </p>
           </div>
         ) : failedMessage ? (
@@ -649,218 +1029,74 @@ export function SiteHealthAuditWorkflow({
             <p className="text-sm text-red-600/80">{failedMessage}</p>
           </div>
         ) : hasResult ? (
-          <div className="mt-5 space-y-8">
-            {/* Scores */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <ScoreCard label="SEO Score" value={seoScore} />
-              <ScoreCard label="AI Readiness Score" value={aiScore} />
-              <ScoreCard label="Overall Score" value={overallScore} />
-            </div>
-
-            {/* AI Bot Access */}
-            <div>
-              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
-                AI Bot Access
-              </h3>
-              {botAccess.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
-                        <th className="pb-2 pr-4">Bot</th>
-                        <th className="pb-2 pr-4">Operator</th>
-                        <th className="pb-2 pr-4">Purpose</th>
-                        <th className="pb-2">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {botAccess.map((row, index) => (
-                        <tr
-                          key={index}
-                          className="border-b border-navy/[0.04] last:border-0"
-                        >
-                          <td className="py-2.5 pr-4 font-medium text-navy">
-                            {cellText(row.bot)}
-                          </td>
-                          <td className="py-2.5 pr-4 text-slate-600">
-                            {cellText(row.operator)}
-                          </td>
-                          <td className="py-2.5 pr-4 text-slate-600">
-                            {cellText(row.purpose)}
-                          </td>
-                          <td className="py-2.5">
-                            <span
-                              className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${botStatusTone(
-                                botStatusLabel(row.status)
-                              )}`}
-                            >
-                              {botStatusLabel(row.status)}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="text-sm text-slate-500">
-                  No AI bot access data available.
+          results.length > 0 ? (
+            <div className="mt-5 space-y-5">
+              {/* Run summary strip */}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-mist/40 px-4 py-3">
+                <p className="text-sm font-semibold text-navy">
+                  {completedResults.length} of {results.length} sites audited
+                  successfully
                 </p>
-              )}
-            </div>
-
-            {/* Site-level indicators */}
-            {siteLevel && (
-              <div className="flex flex-wrap items-center gap-6">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    llms.txt
+                {completedResults.length > 1 && avgOverall !== null && (
+                  <p className="text-sm font-semibold text-accent-deep">
+                    Average Overall Score: {Math.round(avgOverall)}
                   </p>
-                  <div className="mt-1">
-                    <FoundBadge found={siteLevel.llms_txt_found === true} />
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    sitemap.xml
-                  </p>
-                  <div className="mt-1">
-                    <FoundBadge found={siteLevel.sitemap_found === true} />
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    robots.txt
-                  </p>
-                  <div className="mt-1">
-                    <FoundBadge found={siteLevel.robots_txt_found === true} />
-                  </div>
-                </div>
+                )}
               </div>
-            )}
 
-            {/* Structured data + JS risk */}
-            <div className="flex flex-wrap items-center gap-6">
-              {structuredData && (
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    Structured data
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Types found:{" "}
-                    <span className="font-semibold text-navy">{typesFound}</span>
-                  </p>
-                  <div className="mt-1.5">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
-                        orgComplete
-                          ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                          : "bg-yellow-50 text-yellow-700 ring-yellow-200"
+              {/* Per-site tabs */}
+              <div className="flex flex-wrap gap-2">
+                {results.map((site, index) => {
+                  const active = index === siteIndex;
+                  const failed = !isCompletedSite(site);
+                  return (
+                    <button
+                      key={index}
+                      type="button"
+                      onClick={() => setActiveSiteIndex(index)}
+                      aria-pressed={active}
+                      className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+                        active
+                          ? "border-navy bg-navy text-white"
+                          : "border-navy/10 bg-white text-navy hover:bg-mist"
                       }`}
                     >
-                      Organization schema: {orgComplete ? "Complete" : "Incomplete"}
-                    </span>
-                  </div>
-                </div>
-              )}
-              {jsRisk && (
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    JS rendering risk
-                  </p>
-                  <div className="mt-1.5">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${riskTone(
-                        jsRisk
-                      )}`}
-                    >
-                      {jsRisk.charAt(0).toUpperCase() + jsRisk.slice(1).toLowerCase()}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+                      <span
+                        className={`size-1.5 rounded-full ${
+                          failed ? "bg-red-400" : "bg-emerald-400"
+                        }`}
+                      />
+                      <span className="max-w-44 truncate">
+                        {siteTabLabel(site.url)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
 
-            {/* Per-page table */}
-            <div>
-              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
-                Pages ({pages.length})
-              </h3>
-              {pages.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
-                        <th className="pb-2 pr-4">URL</th>
-                        <th className="pb-2 pr-4">Title</th>
-                        <th className="pb-2 pr-4">Meta Description</th>
-                        <th className="pb-2 pr-4">H1</th>
-                        <th className="pb-2 pr-4">Alt-Text %</th>
-                        <th className="pb-2 pr-4">Word Count</th>
-                        <th className="pb-2 pr-4">Load Time</th>
-                        <th className="pb-2 pr-4">Broken Links</th>
-                        <th className="pb-2">Issues</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pages.map((row, index) => (
-                        <tr
-                          key={index}
-                          className="border-b border-navy/[0.04] last:border-0"
-                        >
-                          <td className="max-w-56 py-2.5 pr-4 align-top">
-                            {row.url ? (
-                              <a
-                                href={formatUrl(row.url)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="break-words text-accent-deep underline underline-offset-2 hover:text-navy"
-                              >
-                                {cellText(row.url)}
-                              </a>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className="max-w-56 py-2.5 pr-4 align-top text-slate-600">
-                            {cellText(row.title)}
-                          </td>
-                          <td className="max-w-48 py-2.5 pr-4 align-top text-slate-600">
-                            {cellText(row.meta_description_status)}
-                          </td>
-                          <td className="py-2.5 pr-4 align-top text-slate-600">
-                            {formatH1(row.h1_count)}
-                          </td>
-                          <td className="py-2.5 pr-4 align-top text-slate-600">
-                            {formatPercent(row.alt_text_percentage)}
-                          </td>
-                          <td className="py-2.5 pr-4 align-top text-slate-600">
-                            {formatCount(row.word_count)}
-                          </td>
-                          <td className="py-2.5 pr-4 align-top whitespace-nowrap text-slate-600">
-                            {formatLoadTime(row.load_time_ms)}
-                          </td>
-                          <td className="py-2.5 pr-4 align-top text-slate-600">
-                            {cellText(row.broken_links_found)}
-                          </td>
-                          <td
-                            className="max-w-72 py-2.5 align-top text-slate-600"
-                            title={joinList(row.issues, "")}
-                          >
-                            {joinList(row.issues)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {/* Active site report */}
+              {activeSiteFailed ? (
+                <div className="rounded-xl bg-red-50 px-6 py-10 text-center ring-1 ring-red-200">
+                  <p className="text-sm font-semibold text-red-700">
+                    {cellText(activeSite?.url)}
+                  </p>
+                  <p className="mt-1 text-sm text-red-600/80">
+                    {joinList(activeSite?.error) || "This site could not be audited."}
+                  </p>
                 </div>
+              ) : activeSite ? (
+                <SiteReport site={activeSite} />
               ) : (
-                <p className="text-sm text-slate-500">
-                  No page-level data available.
-                </p>
+                <p className="text-sm text-slate-500">No site selected.</p>
               )}
             </div>
-          </div>
+          ) : (
+            <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-xl bg-mist/40 px-6 py-12 text-center">
+              <p className="text-sm text-slate-500">
+                Your audit results will appear here once ready.
+              </p>
+            </div>
+          )
         ) : (
           <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-xl bg-mist/40 px-6 py-12 text-center">
             <p className="text-sm text-slate-500">
@@ -884,6 +1120,15 @@ export function SiteHealthAuditWorkflow({
           fields={fields}
           onOpen={openRequest}
           emptyMessage="No audits yet. Your first run will appear here."
+          formatCell={(field, input) => {
+            if (field.name === "urls") {
+              const list = Array.isArray(input?.urls)
+                ? (input.urls as string[])
+                : [];
+              return list.length === 1 ? "1 site" : `${list.length} sites`;
+            }
+            return undefined;
+          }}
         />
       </section>
     </div>
