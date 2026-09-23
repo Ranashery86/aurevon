@@ -306,7 +306,8 @@ insert into public.services (id, name, key, status)
 values
   ('00000000-0000-0000-0000-000000000010', 'Website Crawler',   'website-crawler',  'active'),
   ('00000000-0000-0000-0000-000000000011', 'Lead Generation',   'lead-generation',  'active'),
-  ('00000000-0000-0000-0000-000000000012', 'AI Content Writing','ai-content-writing','active')
+  ('00000000-0000-0000-0000-000000000012', 'AI Content Writing','ai-content-writing','active'),
+  ('00000000-0000-0000-0000-000000000013', 'Site Health & AI Audit','site-health-audit','active')
 on conflict (id) do nothing;
 
 -- Migration for existing databases: the crawler service was previously keyed
@@ -319,9 +320,11 @@ update public.services set key = 'website-crawler' where key = 'crawler';
 --   lead-generation = 1 credit per lead (leads_count)
 --   ai-content-writing = 2/4/6 by Length
 --   website-crawler = 1 credit per URL (urls.length, clamped 1–50)
+--   site-health-audit = 5/15/30 by audit depth (max_pages)
 update public.services set credit_cost = 10 where key = 'lead-generation';
 update public.services set credit_cost = 5  where key = 'website-crawler';
 update public.services set credit_cost = 4  where key = 'ai-content-writing';
+update public.services set credit_cost = 15 where key = 'site-health-audit';
 
 -- ── existing user backfill (safe to re-run) ────────────────────
 -- Grants the Trial plan + starting credits to users who signed up

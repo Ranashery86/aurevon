@@ -49,6 +49,7 @@ export function authenticateCallback(headers: Headers): {
 //   - lead-generation:    input.leads_count  (1 credit per lead)
 //   - ai-content-writing: input.length       (2/4/6)
 //   - website-crawler:    input.urls.length  (1 credit per URL, clamped 1–50)
+//   - site-health-audit:  input.max_pages    (5/15/30 — audit depth)
 // Fallback: the service's flat services.credit_cost. Returns null ONLY when
 // neither source yields a positive amount (which is then logged loudly).
 async function getDeductionAmount(
@@ -130,6 +131,8 @@ async function getDeductionAmount(
 //   - lead-generation:     { leads: [...] }
 //   - ai-content-writing:  { content: "<text>" }
 //   - website-crawler:     { results: [...] }   (detected explicitly below)
+//   - site-health-audit:   { scores, site_level, structured_data,
+//                           js_rendering_risk, pages } (detected explicitly)
 export function buildCallbackOutput(
   status: "completed" | "failed",
   result: unknown,
@@ -139,14 +142,29 @@ export function buildCallbackOutput(
     return { error: error ?? "Workflow failed" };
   }
 
-  // website-crawler: n8n posts { results: Array } — keep it untouched so the
-  // dashboard table can render output.results directly.
-  if (
-    result &&
-    typeof result === "object" &&
-    Array.isArray((result as { results?: unknown }).results)
-  ) {
-    return result;
+  // A shared callback payload — match by shape and store untouched.
+  if (result && typeof result === "object") {
+    const candidate = result as Record<string, unknown>;
+
+    // website-crawler: n8n posts { results: Array } — keep it untouched so the
+    // dashboard table can render output.results directly.
+    if (Array.isArray(candidate.results)) {
+      return result;
+    }
+
+    // site-health-audit: n8n posts the full report object — detected via the
+    // scores key (with seo_score, ai_readiness_score, overall_score) and
+    // stored as-is so the dashboard can render each section verbatim.
+    const scores = candidate.scores;
+    const isAuditScores =
+      scores != null &&
+      typeof scores === "object" &&
+      "seo_score" in scores &&
+      "ai_readiness_score" in scores &&
+      "overall_score" in scores;
+    if (isAuditScores) {
+      return result;
+    }
   }
 
   return result ?? null;

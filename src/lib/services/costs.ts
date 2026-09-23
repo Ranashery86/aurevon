@@ -93,11 +93,30 @@ export function getWebsiteCrawlerCost(urls: unknown): number | null {
   return count;
 }
 
+// ── Site Health & AI Audit ──────────────────────────────────────
+// Cost = the selected audit depth (1 credit per page audited). Only the
+// exact tier sizes below are valid; a manipulated client request claiming
+// any other number gets null (so it falls back to services.credit_cost).
+
+export const SITE_HEALTH_MAX_PAGES = [5, 15, 30] as const;
+
+// Accepts a max_pages value ONLY when it is exactly 5, 15, or 30. Anything
+// else (including a fake "cheaper tier" number) returns null — the caller
+// then falls back to the service's flat services.credit_cost (15).
+export function getSiteHealthAuditCost(maxPages: unknown): number | null {
+  const value = Number(maxPages);
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
+  return (SITE_HEALTH_MAX_PAGES as readonly number[]).includes(value)
+    ? value
+    : null;
+}
+
 // Resolve the credit cost of a run from a service's input. Used by the
 // callback to deduct the exact same amount that was quoted at submit time:
-//   - lead-generation: 1 credit per requested lead (input.leads_count)
+//   - lead-generation:    1 credit per requested lead (input.leads_count)
 //   - ai-content-writing: 2/4/6 credits from input.length
-//   - website-crawler: 1 credit per URL (input.urls), clamped to 1–50
+//   - website-crawler:    1 credit per URL (input.urls), clamped to 1–50
+//   - site-health-audit:  5/15/30 credits from input.max_pages (audit depth)
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {
@@ -110,6 +129,8 @@ export function getServiceCreditCost(input: ServiceInput, serviceKey: string): n
       return getAiContentWritingCost(input.length);
     case "website-crawler":
       return getWebsiteCrawlerCost(input.urls);
+    case "site-health-audit":
+      return getSiteHealthAuditCost(input.max_pages);
     default:
       return null;
   }
