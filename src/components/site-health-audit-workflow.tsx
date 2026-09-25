@@ -62,6 +62,8 @@ type SiteResult = {
   structured_data?: Record<string, unknown> | null;
   js_rendering_risk?: unknown;
   pages?: unknown[];
+  checks?: unknown[];
+  category_scores?: Record<string, unknown> | null;
   error?: unknown;
 };
 
@@ -256,6 +258,29 @@ function esc(value: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
+function pdfCheckStatusBadge(status: unknown): string {
+  const text = String(status ?? "").trim().toLowerCase();
+  if (text === "pass") {
+    return `<span class="badge" style="background:#6ee7b733;color:#0f2a4a;border:1px solid #6ee7b7;">Pass</span>`;
+  }
+  if (text === "warn" || text === "warning") {
+    return `<span class="badge" style="background:#fcd34d33;color:#0f2a4a;border:1px solid #fcd34d;">Warn</span>`;
+  }
+  if (text === "fail") {
+    return `<span class="badge" style="background:#fca5a533;color:#0f2a4a;border:1px solid #fca5a5;">Fail</span>`;
+  }
+  const raw = String(status ?? "").trim();
+  return `<span class="badge" style="background:#cbd5e133;color:#0f2a4a;border:1px solid #cbd5e1;">${esc(raw || "—")}</span>`;
+}
+
+function pdfScoreBadge(score: number | null): string {
+  if (score === null) {
+    return `<span class="badge" style="background:#e2e8f033;color:#0f2a4a;border:1px solid #cbd5e1;">No score</span>`;
+  }
+  const color = score < 50 ? "#fca5a5" : score < 80 ? "#fcd34d" : "#6ee7b7";
+  return `<span class="badge" style="background:${color}33;color:#0f2a4a;border:1px solid ${color};">${Math.round(score)}/100</span>`;
+}
+
 function buildSiteBlockHtml(site: SiteResult): string {
   const scores = site.scores ?? null;
   const seo = toNumber(scores?.seo_score);
@@ -272,6 +297,73 @@ function buildSiteBlockHtml(site: SiteResult): string {
     ? (siteLevel.ai_bot_access as AiBotAccessRow[])
     : [];
   const pages: PageRow[] = Array.isArray(site.pages) ? (site.pages as PageRow[]) : [];
+  const checks: AuditCheck[] = Array.isArray(site.checks)
+    ? (site.checks as AuditCheck[])
+    : [];
+  const hasCategoryScores =
+    site.category_scores != null && typeof site.category_scores === "object";
+  const categoryScores: CategoryScores | null = hasCategoryScores
+    ? (site.category_scores as CategoryScores)
+    : null;
+  const showChecks = checks.length > 0 && categoryScores !== null;
+  const passedTotal = countChecksByStatus(checks, "pass");
+  const warnedTotal = countChecksByStatus(checks, "warn");
+  const failedTotal = countChecksByStatus(checks, "fail");
+
+  const summaryLine = showChecks
+    ? `<div class="indicator-row" style="margin-bottom:28px;">
+      <span class="badge" style="background:#6ee7b733;color:#0f2a4a;border:1px solid #6ee7b7;">${passedTotal} passed</span>
+      <span class="badge" style="background:#fcd34d33;color:#0f2a4a;border:1px solid #fcd34d;">${warnedTotal} warning${warnedTotal === 1 ? "" : "s"}</span>
+      <span class="badge" style="background:#fca5a533;color:#0f2a4a;border:1px solid #fca5a5;">${failedTotal} failed</span>
+    </div>`
+    : "";
+
+  const categoryBlocks = showChecks
+    ? CATEGORY_ORDER.map((categoryName) => {
+        const categoryChecks = checks.filter(
+          (entry) =>
+            normalizeCategory(entry.category) === normalizeCategory(categoryName)
+        );
+        if (categoryChecks.length === 0) return "";
+        const scores = findCategoryScore(categoryScores ?? {}, categoryName) ?? {};
+        const score = toNumber(scores.score);
+        const passed = toNumber(scores.pass) ?? 0;
+        const warned = toNumber(scores.warn) ?? 0;
+        const failed = toNumber(scores.fail) ?? 0;
+        const rows = categoryChecks
+          .map((entry) => {
+            const message = joinList(entry.message, "");
+            return `<tr>
+                <td>${pdfCheckStatusBadge(entry.status)}</td>
+                <td><strong>${esc(cellText(entry.check))}</strong></td>
+                <td>${esc(message || "—")}</td>
+              </tr>`;
+          })
+          .join("");
+        return `
+          <div class="check-category">
+            <div class="check-category-head">
+              <span class="check-category-name">${esc(categoryName)}</span>
+              ${pdfScoreBadge(score)}
+              <span class="badge" style="background:#6ee7b733;color:#0f2a4a;border:1px solid #6ee7b7;">${passed} pass</span>
+              <span class="badge" style="background:#fcd34d33;color:#0f2a4a;border:1px solid #fcd34d;">${warned} warn</span>
+              <span class="badge" style="background:#fca5a533;color:#0f2a4a;border:1px solid #fca5a5;">${failed} fail</span>
+            </div>
+            <table>
+              <thead><tr><th style="width:80px;">Status</th><th>Check</th><th>Message</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+      })
+      .join("")
+    : "";
+
+  const checklistSection = showChecks
+    ? `<div class="section">
+      <div class="section-title">Audit checklist</div>
+      ${categoryBlocks}
+    </div>`
+    : "";
 
   const seoRow = (score: number | null, label: string) => {
     const tone = scoreTone(score);
@@ -334,6 +426,8 @@ function buildSiteBlockHtml(site: SiteResult): string {
         </div>
       </div>
 
+      ${summaryLine}
+
       <div class="section">
         <div class="section-title">Site-level signals</div>
         <div class="indicator-row">
@@ -360,6 +454,8 @@ function buildSiteBlockHtml(site: SiteResult): string {
             : `<div class="no-data">No AI bot access data available.</div>`
         }
       </div>
+
+      ${checklistSection}
 
       <div class="section">
         <div class="section-title">Pages (${pages.length})</div>
@@ -411,6 +507,9 @@ function buildPdfHtml(results: SiteResult[]): string {
   .indicator-row { display: flex; gap: 12px; flex-wrap: wrap; }
   .indicator { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
   .indicator strong { margin-right: 6px; }
+  .check-category { border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .check-category-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .check-category-name { font-size: 14px; font-weight: 800; color: #0f2a4a; }
   .badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; border-bottom: 1px solid #e2e8f0; padding: 8px 10px; }
@@ -440,6 +539,194 @@ function downloadPdfReport(output: SiteHealthOutput) {
   setTimeout(() => win.print(), 300);
 }
 
+const CATEGORY_ORDER = [
+  "Core SEO",
+  "Content",
+  "Images",
+  "Links",
+  "Security",
+  "Performance",
+  "Social",
+  "E-E-A-T",
+  "Structured Data",
+  "AI/GEO Readiness",
+  "URL Structure",
+  "Mobile",
+  "HTML Validation",
+  "Redirects",
+  "Accessibility",
+  "Internationalization",
+] as const;
+
+type AuditCheck = {
+  category?: unknown;
+  check?: unknown;
+  status?: unknown;
+  message?: unknown;
+};
+
+type CategoryScore = {
+  score?: unknown;
+  pass?: unknown;
+  warn?: unknown;
+  fail?: unknown;
+};
+
+type CategoryScores = Record<string, CategoryScore>;
+
+function checkStatusInfo(status: unknown): { badge: string; label: string } {
+  const text = String(status ?? "").trim().toLowerCase();
+  if (text === "pass") {
+    return { badge: "bg-emerald-50 text-emerald-700 ring-emerald-200", label: "Pass" };
+  }
+  if (text === "warn" || text === "warning") {
+    return { badge: "bg-yellow-50 text-yellow-700 ring-yellow-200", label: "Warn" };
+  }
+  if (text === "fail") {
+    return { badge: "bg-red-50 text-red-700 ring-red-200", label: "Fail" };
+  }
+  const raw = String(status ?? "").trim();
+  return { badge: "bg-slate-100 text-slate-600 ring-slate-200", label: raw || "—" };
+}
+
+function countChecksByStatus(checks: AuditCheck[], wanted: "pass" | "warn" | "fail"): number {
+  return checks.filter((entry) => {
+    const text = String(entry.status ?? "").trim().toLowerCase();
+    if (wanted === "warn") return text === "warn" || text === "warning";
+    return text === wanted;
+  }).length;
+}
+
+function normalizeCategory(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function findCategoryScore(
+  categoryScores: CategoryScores,
+  categoryName: string
+): CategoryScore | undefined {
+  const direct = categoryScores[categoryName];
+  if (direct != null) return direct;
+  const normalized = normalizeCategory(categoryName);
+  const match = Object.keys(categoryScores).find(
+    (key) => normalizeCategory(key) === normalized
+  );
+  return match != null ? categoryScores[match] : undefined;
+}
+
+function CategoryChecksSection({
+  checks,
+  categoryScores,
+}: {
+  checks: AuditCheck[];
+  categoryScores: CategoryScores;
+}) {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+
+  const toggle = (category: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  };
+
+  const visibleCategories = CATEGORY_ORDER.filter((categoryName) =>
+    checks.some((entry) => normalizeCategory(entry.category) === normalizeCategory(categoryName))
+  );
+  if (visibleCategories.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {visibleCategories.map((categoryName) => {
+        const categoryChecks = checks.filter(
+          (entry) => normalizeCategory(entry.category) === normalizeCategory(categoryName)
+        );
+        const scores = findCategoryScore(categoryScores, categoryName) ?? {};
+        const score = toNumber(scores.score);
+        const passed = toNumber(scores.pass) ?? 0;
+        const warned = toNumber(scores.warn) ?? 0;
+        const failed = toNumber(scores.fail) ?? 0;
+        const isCollapsed = collapsed.has(categoryName);
+
+        return (
+          <div
+            key={categoryName}
+            className="rounded-2xl border border-navy/[0.08] bg-white"
+          >
+            <button
+              type="button"
+              onClick={() => toggle(categoryName)}
+              aria-expanded={!isCollapsed}
+              className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-mist/40"
+            >
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-bold text-navy">{categoryName}</span>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-bold ring-1 ${
+                    score === null
+                      ? "bg-slate-100 text-slate-600 ring-slate-200"
+                      : score < 50
+                        ? "bg-red-50 text-red-700 ring-red-200"
+                        : score < 80
+                          ? "bg-yellow-50 text-yellow-700 ring-yellow-200"
+                          : "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                  }`}
+                >
+                  {score === null ? "No score" : `${Math.round(score)}/100`}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                    {passed} pass
+                  </span>
+                  <span className="rounded-full bg-yellow-50 px-2 py-0.5 text-xs font-semibold text-yellow-700 ring-1 ring-yellow-200">
+                    {warned} warn
+                  </span>
+                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 ring-1 ring-red-200">
+                    {failed} fail
+                  </span>
+                </div>
+              </div>
+              <span className="text-xs font-semibold text-slate-400">
+                {isCollapsed ? "Show checks" : "Hide checks"}
+              </span>
+            </button>
+            {!isCollapsed && (
+              <ul className="space-y-3 border-t border-navy/[0.06] px-4 py-4">
+                {categoryChecks.map((entry, index) => {
+                  const statusInfo = checkStatusInfo(entry.status);
+                  const message = joinList(entry.message, "");
+                  return (
+                    <li key={index} className="flex items-start gap-2.5">
+                      <span
+                        className={`mt-0.5 shrink-0 rounded-full px-2.5 py-0.5 whitespace-nowrap text-xs font-semibold ring-1 ${statusInfo.badge}`}
+                      >
+                        {statusInfo.label}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-navy">
+                          {cellText(entry.check)}
+                        </p>
+                        {message && (
+                          <p className="mt-0.5 text-sm text-slate-600">{message}</p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SiteReport({ site }: { site: SiteResult }) {
   const scores = site.scores ?? null;
   const seoScore = toNumber(scores?.seo_score);
@@ -459,6 +746,18 @@ function SiteReport({ site }: { site: SiteResult }) {
     ? (siteLevel.ai_bot_access as AiBotAccessRow[])
     : [];
   const pages: PageRow[] = Array.isArray(site.pages) ? (site.pages as PageRow[]) : [];
+  const checks: AuditCheck[] = Array.isArray(site.checks)
+    ? (site.checks as AuditCheck[])
+    : [];
+  const hasCategoryScores =
+    site.category_scores != null && typeof site.category_scores === "object";
+  const categoryScores: CategoryScores | null = hasCategoryScores
+    ? (site.category_scores as CategoryScores)
+    : null;
+  const showChecks = checks.length > 0 && categoryScores !== null;
+  const passedTotal = countChecksByStatus(checks, "pass");
+  const warnedTotal = countChecksByStatus(checks, "warn");
+  const failedTotal = countChecksByStatus(checks, "fail");
   const typesFound = joinList(structuredData?.types_found, "None found");
   const orgComplete = structuredData?.organization_schema_complete === true;
 
@@ -470,6 +769,20 @@ function SiteReport({ site }: { site: SiteResult }) {
         <ScoreCard label="AI Readiness Score" value={aiScore} />
         <ScoreCard label="Overall Score" value={overallScore} />
       </div>
+
+      {showChecks && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-700 ring-1 ring-emerald-200">
+            {passedTotal} passed
+          </span>
+          <span className="rounded-full bg-yellow-50 px-3 py-1 text-sm font-bold text-yellow-700 ring-1 ring-yellow-200">
+            {warnedTotal} warning{warnedTotal === 1 ? "" : "s"}
+          </span>
+          <span className="rounded-full bg-red-50 px-3 py-1 text-sm font-bold text-red-700 ring-1 ring-red-200">
+            {failedTotal} failed
+          </span>
+        </div>
+      )}
 
       {/* AI Bot Access */}
       <div>
@@ -594,6 +907,15 @@ function SiteReport({ site }: { site: SiteResult }) {
           </div>
         )}
       </div>
+
+      {showChecks && (
+        <div>
+          <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+            Audit Checklist
+          </h3>
+          <CategoryChecksSection checks={checks} categoryScores={categoryScores} />
+        </div>
+      )}
 
       {/* Per-page table */}
       <div>
@@ -1085,7 +1407,10 @@ export function SiteHealthAuditWorkflow({
                   </p>
                 </div>
               ) : activeSite ? (
-                <SiteReport site={activeSite} />
+                <SiteReport
+                  key={String(activeSite.url ?? "") || siteIndex}
+                  site={activeSite}
+                />
               ) : (
                 <p className="text-sm text-slate-500">No site selected.</p>
               )}
