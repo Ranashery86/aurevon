@@ -281,6 +281,37 @@ function pdfScoreBadge(score: number | null): string {
   return `<span class="badge" style="background:${color}33;color:#0f2a4a;border:1px solid ${color};">${Math.round(score)}/100</span>`;
 }
 
+function pdfSummaryTableHtml(rows: CategorySummaryRow[]): string {
+  if (rows.length === 0) return "";
+  const scoreColor = (score: number | null) => {
+    if (score === null) return "#94a3b8";
+    if (score >= 90) return "#059669";
+    if (score >= 70) return "#d97706";
+    return "#dc2626";
+  };
+  const failColor = (value: number) => (value > 0 ? "#dc2626" : "#94a3b8");
+  const warnColor = (value: number) => (value > 0 ? "#d97706" : "#94a3b8");
+  const bodyRows = rows
+    .map(
+      (row) => `<tr>
+        <td>${esc(row.name)}</td>
+        <td style="text-align:right;font-weight:700;color:${scoreColor(row.score)};">${row.score === null ? "&mdash;" : Math.round(row.score)}</td>
+        <td style="text-align:right;color:${failColor(row.fail)};">${row.fail}</td>
+        <td style="text-align:right;color:${warnColor(row.warn)};">${row.warn}</td>
+        <td style="text-align:right;color:#059669;">${row.pass}</td>
+      </tr>`
+    )
+    .join("");
+  return `
+    <div class="section">
+      <div class="section-title">Audit category summary</div>
+      <table>
+        <thead><tr><th>Category</th><th style="text-align:right;">Score</th><th style="text-align:right;">Fail</th><th style="text-align:right;">Warn</th><th style="text-align:right;">Pass</th></tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>`;
+}
+
 function buildSiteBlockHtml(site: SiteResult): string {
   const scores = site.scores ?? null;
   const seo = toNumber(scores?.seo_score);
@@ -319,7 +350,7 @@ function buildSiteBlockHtml(site: SiteResult): string {
     : "";
 
   const categoryBlocks = showChecks
-    ? CATEGORY_ORDER.map((categoryName) => {
+    ? CATEGORY_SUMMARY_ORDER.map((categoryName) => {
         const categoryChecks = checks.filter(
           (entry) =>
             normalizeCategory(entry.category) === normalizeCategory(categoryName)
@@ -364,6 +395,11 @@ function buildSiteBlockHtml(site: SiteResult): string {
       ${categoryBlocks}
     </div>`
     : "";
+
+  const categorySummaryRows =
+    categoryScores !== null ? buildCategorySummaryRows(categoryScores) : [];
+  const categorySummarySection =
+    categorySummaryRows.length > 0 ? pdfSummaryTableHtml(categorySummaryRows) : "";
 
   const seoRow = (score: number | null, label: string) => {
     const tone = scoreTone(score);
@@ -446,6 +482,10 @@ function buildSiteBlockHtml(site: SiteResult): string {
         </div>
       </div>
 
+      ${categorySummarySection}
+
+      ${checklistSection}
+
       <div class="section">
         <div class="section-title">AI bot access</div>
         ${
@@ -454,8 +494,6 @@ function buildSiteBlockHtml(site: SiteResult): string {
             : `<div class="no-data">No AI bot access data available.</div>`
         }
       </div>
-
-      ${checklistSection}
 
       <div class="section">
         <div class="section-title">Pages (${pages.length})</div>
@@ -538,25 +576,6 @@ function downloadPdfReport(output: SiteHealthOutput) {
   win.focus();
   setTimeout(() => win.print(), 300);
 }
-
-const CATEGORY_ORDER = [
-  "Core SEO",
-  "Content",
-  "Images",
-  "Links",
-  "Security",
-  "Performance",
-  "Social",
-  "E-E-A-T",
-  "Structured Data",
-  "AI/GEO Readiness",
-  "URL Structure",
-  "Mobile",
-  "HTML Validation",
-  "Redirects",
-  "Accessibility",
-  "Internationalization",
-] as const;
 
 const CATEGORY_SUMMARY_ORDER = [
   "Core SEO",
@@ -724,7 +743,7 @@ function CategoryChecksSection({
     });
   };
 
-  const visibleCategories = CATEGORY_ORDER.filter((categoryName) =>
+  const visibleCategories = CATEGORY_SUMMARY_ORDER.filter((categoryName) =>
     checks.some((entry) => normalizeCategory(entry.category) === normalizeCategory(categoryName))
   );
   if (visibleCategories.length === 0) return null;
@@ -876,58 +895,6 @@ function SiteReport({ site }: { site: SiteResult }) {
         </div>
       )}
 
-      {/* AI Bot Access */}
-      <div>
-        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
-          AI Bot Access
-        </h3>
-        {botAccess.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
-                  <th className="pb-2 pr-4">Bot</th>
-                  <th className="pb-2 pr-4">Operator</th>
-                  <th className="pb-2 pr-4">Purpose</th>
-                  <th className="pb-2">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {botAccess.map((row, index) => (
-                  <tr
-                    key={index}
-                    className="border-b border-navy/[0.04] last:border-0"
-                  >
-                    <td className="py-2.5 pr-4 font-medium text-navy">
-                      {cellText(row.bot)}
-                    </td>
-                    <td className="py-2.5 pr-4 text-slate-600">
-                      {cellText(row.operator)}
-                    </td>
-                    <td className="py-2.5 pr-4 text-slate-600">
-                      {cellText(row.purpose)}
-                    </td>
-                    <td className="py-2.5">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${botStatusTone(
-                          botStatusLabel(row.status)
-                        )}`}
-                      >
-                        {botStatusLabel(row.status)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="text-sm text-slate-500">
-            No AI bot access data available.
-          </p>
-        )}
-      </div>
-
       {/* Site-level indicators */}
       {siteLevel && (
         <div className="flex flex-wrap items-center gap-6">
@@ -1017,6 +984,58 @@ function SiteReport({ site }: { site: SiteResult }) {
           <CategoryChecksSection checks={checks} categoryScores={categoryScores} />
         </div>
       )}
+
+      {/* AI Bot Access */}
+      <div>
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+          AI Bot Access
+        </h3>
+        {botAccess.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-navy/[0.06] text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <th className="pb-2 pr-4">Bot</th>
+                  <th className="pb-2 pr-4">Operator</th>
+                  <th className="pb-2 pr-4">Purpose</th>
+                  <th className="pb-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {botAccess.map((row, index) => (
+                  <tr
+                    key={index}
+                    className="border-b border-navy/[0.04] last:border-0"
+                  >
+                    <td className="py-2.5 pr-4 font-medium text-navy">
+                      {cellText(row.bot)}
+                    </td>
+                    <td className="py-2.5 pr-4 text-slate-600">
+                      {cellText(row.operator)}
+                    </td>
+                    <td className="py-2.5 pr-4 text-slate-600">
+                      {cellText(row.purpose)}
+                    </td>
+                    <td className="py-2.5">
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${botStatusTone(
+                          botStatusLabel(row.status)
+                        )}`}
+                      >
+                        {botStatusLabel(row.status)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">
+            No AI bot access data available.
+          </p>
+        )}
+      </div>
 
       {/* Per-page table */}
       <div>
