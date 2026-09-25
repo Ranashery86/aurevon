@@ -558,6 +558,25 @@ const CATEGORY_ORDER = [
   "Internationalization",
 ] as const;
 
+const CATEGORY_SUMMARY_ORDER = [
+  "Core SEO",
+  "Content",
+  "Performance",
+  "Links",
+  "Images",
+  "Security",
+  "Accessibility",
+  "Structured Data",
+  "Social",
+  "E-E-A-T",
+  "URL Structure",
+  "Mobile",
+  "HTML Validation",
+  "Redirects",
+  "AI/GEO Readiness",
+  "Internationalization",
+] as const;
+
 type AuditCheck = {
   category?: unknown;
   check?: unknown;
@@ -612,6 +631,76 @@ function findCategoryScore(
     (key) => normalizeCategory(key) === normalized
   );
   return match != null ? categoryScores[match] : undefined;
+}
+
+type CategorySummaryRow = {
+  name: string;
+  score: number | null;
+  fail: number;
+  warn: number;
+  pass: number;
+};
+
+function buildCategorySummaryRows(categoryScores: CategoryScores): CategorySummaryRow[] {
+  return CATEGORY_SUMMARY_ORDER.flatMap((categoryName) => {
+    const scores = findCategoryScore(categoryScores, categoryName);
+    if (scores == null) return [];
+    return [
+      {
+        name: categoryName,
+        score: toNumber(scores.score),
+        fail: toNumber(scores.fail) ?? 0,
+        warn: toNumber(scores.warn) ?? 0,
+        pass: toNumber(scores.pass) ?? 0,
+      },
+    ];
+  });
+}
+
+function CategorySummaryTable({ rows }: { rows: CategorySummaryRow[] }) {
+  if (rows.length === 0) return null;
+
+  const scoreClass = (score: number | null) => {
+    if (score === null) return "text-slate-400";
+    if (score >= 90) return "text-emerald-600";
+    if (score >= 70) return "text-amber-600";
+    return "text-red-600";
+  };
+  const failClass = (value: number) => (value > 0 ? "text-red-600" : "text-slate-400");
+  const warnClass = (value: number) => (value > 0 ? "text-amber-600" : "text-slate-400");
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-navy/[0.06] bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-500">
+            <th className="px-3 py-2.5">Category</th>
+            <th className="px-3 py-2.5 text-right">Score</th>
+            <th className="px-3 py-2.5 text-right">Fail</th>
+            <th className="px-3 py-2.5 text-right">Warn</th>
+            <th className="px-3 py-2.5 text-right">Pass</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name} className="border-b border-navy/[0.04] last:border-0">
+              <td className="px-3 py-2.5 font-medium text-navy">{row.name}</td>
+              <td className={`px-3 py-2.5 text-right font-bold ${scoreClass(row.score)}`}>
+                {row.score === null ? "—" : Math.round(row.score)}
+              </td>
+              <td className={`px-3 py-2.5 text-right ${failClass(row.fail)}`}>
+                {row.fail}
+              </td>
+              <td className={`px-3 py-2.5 text-right ${warnClass(row.warn)}`}>
+                {row.warn}
+              </td>
+              <td className="px-3 py-2.5 text-right text-emerald-600">{row.pass}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function CategoryChecksSection({
@@ -755,6 +844,9 @@ function SiteReport({ site }: { site: SiteResult }) {
     ? (site.category_scores as CategoryScores)
     : null;
   const showChecks = checks.length > 0 && categoryScores !== null;
+  const categorySummaryRows =
+    categoryScores !== null ? buildCategorySummaryRows(categoryScores) : [];
+  const showCategorySummary = categorySummaryRows.length > 0;
   const passedTotal = countChecksByStatus(checks, "pass");
   const warnedTotal = countChecksByStatus(checks, "warn");
   const failedTotal = countChecksByStatus(checks, "fail");
@@ -907,6 +999,15 @@ function SiteReport({ site }: { site: SiteResult }) {
           </div>
         )}
       </div>
+
+      {showCategorySummary && (
+        <div>
+          <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+            Audit Category Summary
+          </h3>
+          <CategorySummaryTable rows={categorySummaryRows} />
+        </div>
+      )}
 
       {showChecks && (
         <div>
