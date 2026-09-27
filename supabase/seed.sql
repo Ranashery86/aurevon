@@ -20,12 +20,28 @@ values
   ('00000000-0000-0000-0000-000000000010', 'Website Crawler', 'website-crawler', 'active'),
   ('00000000-0000-0000-0000-000000000011', 'Lead Generation', 'lead-generation', 'active'),
   ('00000000-0000-0000-0000-000000000012', 'AI Content Writing', 'ai-content-writing', 'active'),
-  ('00000000-0000-0000-0000-000000000013', 'Site Health & AI Audit', 'site-health-audit', 'active')
+  ('00000000-0000-0000-0000-000000000013', 'Site Health & AI Audit', 'site-health-audit', 'active'),
+  ('00000000-0000-0000-0000-000000000014', 'Tech Stack Detector', 'tech_stack_detector', 'active')
 on conflict (id) do nothing;
 
 -- Migration for existing databases: the crawler service was previously keyed
 -- 'crawler'; the dashboard and trigger routes now use 'website-crawler'.
 update public.services set key = 'website-crawler' where key = 'crawler';
+
+-- Migration for existing databases: add the Tech Stack Detector service. The
+-- key is load-bearing — it drives the dashboard route
+-- (/dashboard/tech_stack_detector), the trigger route
+-- (/api/services/tech_stack_detector) and credit_transactions.service_key, so
+-- it must stay exactly 'tech_stack_detector' (underscores, not hyphens).
+insert into public.services (id, name, key, status)
+values ('00000000-0000-0000-0000-000000000014', 'Tech Stack Detector', 'tech_stack_detector', 'active')
+on conflict (id) do nothing;
+
+-- The n8n trigger webhook for Tech Stack Detector. Set it per environment
+-- (same pattern as the other services — a data change, no redeploy):
+-- update public.services
+--    set webhook_url = 'https://n8n.example.com/webhook/tech-stack-detector'
+--  where key = 'tech_stack_detector';
 
 -- Per-service credit cost. This is the FALLBACK cost per run; services that
 -- charge dynamically compute their own cost at submit time and only fall
@@ -34,7 +50,9 @@ update public.services set key = 'website-crawler' where key = 'crawler';
 --   ai-content-writing = 2/4/6 by Length
 --   website-crawler = 1 credit per URL (urls.length, clamped 1–50)
 --   site-health-audit = 15 per URL (urls.length × 15, clamped 1–10)
+--   tech_stack_detector = 30 per URL (urls.length × 30, clamped 1–15)
 update public.services set credit_cost = 10 where key = 'lead-generation';
 update public.services set credit_cost = 5  where key = 'website-crawler';
 update public.services set credit_cost = 4  where key = 'ai-content-writing';
 update public.services set credit_cost = 15 where key = 'site-health-audit';
+update public.services set credit_cost = 30 where key = 'tech_stack_detector';

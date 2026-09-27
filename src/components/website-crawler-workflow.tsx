@@ -1,13 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import * as XLSX from "xlsx";
+import { useState } from "react";
 import { card, btnPrimary, btnSecondary, muted } from "@/lib/ui";
 import {
   CRAWL_MAX_URLS,
   CRAWL_MIN_URLS,
-  extractUniqueUrls,
-  looksLikeUrlOrDomain,
 } from "@/lib/services/costs";
 import {
   useServiceRequestHistory,
@@ -19,6 +16,10 @@ import {
   Spinner,
   UpgradeNotice,
 } from "@/components/service-workflow-shared";
+import {
+  MultiUrlInput,
+  useMultiUrlInput,
+} from "@/components/multi-url-input";
 import type {
   ServiceColumn,
   ServiceField,
@@ -44,14 +45,6 @@ const RESULT_COLUMNS: ServiceColumn[] = [
   { key: "pages_crawled", label: "Pages Crawled" },
   { key: "status", label: "Status" },
 ];
-
-const FILE_EXTENSIONS = ["xlsx", "xls", "csv"];
-const MODES = [
-  { id: "manual", label: "Manual Entry" },
-  { id: "upload", label: "Upload Excel/CSV" },
-] as const;
-
-type Mode = (typeof MODES)[number]["id"];
 
 type WebsiteCrawlerWorkflowProps = {
   serviceKey: string;
@@ -132,29 +125,17 @@ export function WebsiteCrawlerWorkflow({
   fields,
   history: initialHistory,
 }: WebsiteCrawlerWorkflowProps) {
-  const [mode, setMode] = useState<Mode>("manual");
-  const [manualText, setManualText] = useState("");
-  const [uploadedCells, setUploadedCells] = useState<string[]>([]);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Shared multi-URL input (manual entry or Excel/CSV upload). `urls` comes
+  // back normalized + de-duplicated, so the live count/cost below and the
+  // submitted payload are derived from the same list.
+  const input = useMultiUrlInput();
+  const { urls, parseError } = input;
+
   const { history, activeRequest, openRequest, launchRequest } =
     useServiceRequestHistory(initialHistory);
-
-  // Final URL list: normalize + dedupe, regardless of input mode, so the live
-  // count/cost and the submitted payload are always in sync.
-  const urls = useMemo(() => {
-    const raw =
-      mode === "manual"
-        ? manualText
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-        : uploadedCells;
-    return extractUniqueUrls(raw);
-  }, [mode, manualText, uploadedCells]);
 
   const cost = urls.length;
   const canAfford = balance >= cost;
@@ -174,58 +155,6 @@ export function WebsiteCrawlerWorkflow({
       ? ((activeRequest.output as { error?: string } | null)?.error ??
         "This request failed. No results were generated.")
       : null;
-
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    setParseError(null);
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-    if (!FILE_EXTENSIONS.includes(ext)) {
-      setParseError("Unsupported file type. Please upload an .xlsx, .xls, or .csv file.");
-      setUploadedCells([]);
-      setFileName(null);
-      return;
-    }
-
-    try {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
-      const cells: string[] = [];
-
-      for (const sheetName of workbook.SheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        const rows = XLSX.utils.sheet_to_json(sheet, {
-          header: 1,
-          raw: false,
-        }) as unknown[][];
-
-        for (const row of rows) {
-          if (!Array.isArray(row)) continue;
-          for (const cell of row) {
-            if (cell == null) continue;
-            const text = String(cell).trim();
-            if (text && looksLikeUrlOrDomain(text)) cells.push(text);
-          }
-        }
-      }
-
-      if (cells.length === 0) {
-        setParseError("No URLs or domains found in this file.");
-        setUploadedCells([]);
-        setFileName(file.name);
-        return;
-      }
-
-      setUploadedCells(cells);
-      setFileName(file.name);
-    } catch {
-      setParseError("Could not read that file. Check it's a valid .xlsx, .xls, or .csv.");
-      setUploadedCells([]);
-      setFileName(null);
-    }
-  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -281,78 +210,12 @@ export function WebsiteCrawlerWorkflow({
           Paste URLs manually or upload a spreadsheet. One credit per URL.
         </p>
 
-        <div className="mt-5 flex flex-wrap gap-2">
-          {MODES.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => setMode(option.id)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
-                mode === option.id
-                  ? "bg-navy text-white"
-                  : "bg-mist text-navy hover:bg-navy/10"
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-          {mode === "manual" ? (
-            <div>
-              <label
-                htmlFor="urls-manual"
-                className="mb-1.5 block text-sm font-semibold text-navy"
-              >
-                URLs (one per line)
-              </label>
-              <textarea
-                id="urls-manual"
-                rows={8}
-                value={manualText}
-                onChange={(event) => setManualText(event.target.value)}
-                placeholder={"example.com\nhttps://another-site.com\nthird-site.io"}
-                className="w-full resize-y rounded-xl border border-navy/10 bg-white px-4 py-2.5 text-sm text-navy placeholder:text-slate-400 focus:border-accent focus:outline-none"
-              />
-            </div>
-          ) : (
-            <div>
-              <label className="mb-1.5 block text-sm font-semibold text-navy">
-                Spreadsheet (.xlsx, .xls, or .csv)
-              </label>
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-navy ring-1 ring-navy/10 transition-all duration-200 hover:-translate-y-0.5 hover:bg-mist">
-                Choose file
-                <input
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={handleFileChange}
-                />
-              </label>
-              <p className={`mt-2 text-sm ${muted}`}>
-                Every cell that looks like a URL or domain is picked up from
-                any column or sheet (a value containing a dot and no
-                whitespace).
-              </p>
-            </div>
-          )}
-
-          {fileName && (
-            <p className="text-sm font-medium text-navy">
-              Loaded: {fileName}
-            </p>
-          )}
+          <MultiUrlInput state={input} idPrefix="urls" />
 
           <p className="text-sm font-semibold text-accent-deep">
             {urls.length} URLs found · {urls.length} credits
           </p>
-
-          {parseError && (
-            <p className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
-              {parseError}
-            </p>
-          )}
 
           {overLimit && (
             <p className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">

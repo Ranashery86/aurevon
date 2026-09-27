@@ -64,6 +64,21 @@ function findDetail(key: string): ServiceDetail {
     };
   }
 
+  if (
+    ["tech_stack_detector", "tech-stack-detector", "tech-stack"].includes(k) ||
+    k.includes("tech-stack")
+  ) {
+    return {
+      title: "Tech Stack Detector",
+      description:
+        "See exactly what a site is built with. Point aurevon at any URL and it fingerprints the CMS, JavaScript framework, hosting, analytics, payment providers, chat widgets and security tooling underneath — with the evidence behind every detection.",
+      input: "Paste one or more website URLs (or upload a spreadsheet)",
+      processing:
+        "aurevon fingerprints each site across 12 technology categories",
+      output: "A category-by-category breakdown with confidence and evidence",
+    };
+  }
+
   return {
     title: "Automation Tool",
     description:

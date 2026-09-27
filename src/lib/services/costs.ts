@@ -1,4 +1,5 @@
 import type { ServiceInput } from "@/lib/services/types";
+import { TECH_STACK_SERVICE_KEY } from "@/lib/services/tech-stack";
 
 // AI Content Writing pricing — the live credit cost is derived from the
 // selected Length. Both the trigger route (balance check) and the shared
@@ -123,12 +124,50 @@ export function getSiteHealthAuditCost(urls: unknown): number | null {
   return count * SITE_AUDIT_RATE_PER_URL;
 }
 
+// ── Tech Stack Detector ─────────────────────────────────────────
+// Cost = 30 credits per URL. Detection is far heavier than a crawl or a
+// health audit (every page is fetched, fingerprinted and cross-referenced
+// against the category catalogue), so the per-URL rate is the highest of the
+// multi-URL services.
+//
+// MAX_URLS_TECH_STACK is this service's OWN cap (15). It is deliberately
+// NOT the crawler's CRAWL_MAX_URLS (50) or the audit's
+// SITE_AUDIT_MAX_URLS (10) — never reuse another service's constant here,
+// or the UI copy, the server-side validation and the quoted cost all drift
+// together. Only the 1–15 URL range is valid; a manipulated client request
+// claiming any other count gets null (falls back to services.credit_cost).
+
+export const TECH_STACK_RATE_PER_URL = 30;
+export const TECH_STACK_MIN_URLS = 1;
+export const MAX_URLS_TECH_STACK = 15;
+
+// Credit cost for a tech-stack run = number of URLs × rate, clamped to the
+// allowed 1–15 range. Returns null when the input isn't a valid URL list
+// (caller falls back to services.credit_cost). Also tolerates the urls value
+// arriving as a JSON-encoded string (defense in depth — the trigger stores a
+// real array, but a future storage layer change must not null out the charge).
+export function getTechStackCost(urls: unknown): number | null {
+  let list = urls;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const count = list.length;
+  if (count < TECH_STACK_MIN_URLS || count > MAX_URLS_TECH_STACK) return null;
+  return count * TECH_STACK_RATE_PER_URL;
+}
+
 // Resolve the credit cost of a run from a service's input. Used by the
 // callback to deduct the exact same amount that was quoted at submit time:
 //   - lead-generation:    1 credit per requested lead (input.leads_count)
 //   - ai-content-writing: 2/4/6 credits from input.length
 //   - website-crawler:    1 credit per URL (input.urls), clamped to 1–50
 //   - site-health-audit:  15 credits per URL (input.urls), clamped to 1–10
+//   - tech_stack_detector: 30 credits per URL (input.urls), clamped to 1–15
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {
@@ -143,6 +182,8 @@ export function getServiceCreditCost(input: ServiceInput, serviceKey: string): n
       return getWebsiteCrawlerCost(input.urls);
     case "site-health-audit":
       return getSiteHealthAuditCost(input.urls);
+    case TECH_STACK_SERVICE_KEY:
+      return getTechStackCost(input.urls);
     default:
       return null;
   }
