@@ -64,10 +64,7 @@ function findDetail(key: string): ServiceDetail {
     };
   }
 
-  if (
-    ["tech_stack_detector", "tech-stack-detector", "tech-stack"].includes(k) ||
-    k.includes("tech-stack")
-  ) {
+  if (["tech-stack-detector", "tech-stack"].includes(k) || k.includes("tech-stack")) {
     return {
       title: "Tech Stack Detector",
       description:

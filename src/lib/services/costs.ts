@@ -167,7 +167,7 @@ export function getTechStackCost(urls: unknown): number | null {
 //   - ai-content-writing: 2/4/6 credits from input.length
 //   - website-crawler:    1 credit per URL (input.urls), clamped to 1–50
 //   - site-health-audit:  15 credits per URL (input.urls), clamped to 1–10
-//   - tech_stack_detector: 30 credits per URL (input.urls), clamped to 1–15
+//   - tech-stack-detector: 30 credits per URL (input.urls), clamped to 1–15
 // Returns null when the cost cannot be derived (caller falls back to the
 // services.credit_cost column).
 export function getServiceCreditCost(input: ServiceInput, serviceKey: string): number | null {

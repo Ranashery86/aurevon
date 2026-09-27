@@ -6,13 +6,15 @@
 // through), so this file is what turns that untrusted JSON into something the
 // dashboard can render without crashing on a missing key or a bad value.
 //
-// The service key uses UNDERSCORES (unlike the older kebab-case keys). It
-// drives the dashboard route (/dashboard/tech_stack_detector), the trigger
-// route (/api/services/tech_stack_detector), the services table row, and the
+// The service key uses hyphens, matching the existing convention in the
+// services table (website-crawler, lead-generation, ai-content-writing,
+// site-health-audit). It drives the dashboard route
+// (/dashboard/tech-stack-detector), the trigger route
+// (/api/services/tech-stack-detector), the services table row, and the
 // credit_transactions.service_key written on deduction — so it is defined
 // once here and imported everywhere rather than re-typed as a literal.
 
-export const TECH_STACK_SERVICE_KEY = "tech_stack_detector";
+export const TECH_STACK_SERVICE_KEY = "tech-stack-detector";
 
 // Fixed display order for the results accordion. Detection may arrive in any
 // order (or omit a category entirely) — the UI always renders all 12 rows in
