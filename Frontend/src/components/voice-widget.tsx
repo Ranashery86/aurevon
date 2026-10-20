@@ -7,11 +7,11 @@ type Status = "idle" | "recording" | "thinking" | "speaking";
 
 interface Message {
   id: number;
-  role: "alex" | "user";
+  role: "aura" | "user";
   text: string;
 }
 
-const GREETING = "Hi, I'm Alex. How can I help you today?";
+const GREETING = "Hi, I'm Aura from aurevon. How can I help you today?";
 const SESSION_STORAGE_KEY = "aurevon_voice_session_id";
 const MAX_RECORDING_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 40_000;
@@ -148,7 +148,7 @@ export function VoiceWidget() {
   const [open, setOpen] = useState(false);
   const [status, setStatusState] = useState<Status>("idle");
   const [messages, setMessages] = useState<Message[]>([
-    { id: 0, role: "alex", text: GREETING },
+    { id: 0, role: "aura", text: GREETING },
   ]);
   const [notice, setNotice] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
@@ -263,7 +263,7 @@ export function VoiceWidget() {
           }
           next.push({
             id: messageIdRef.current++,
-            role: "alex",
+            role: "aura",
             text: data.reply as string,
           });
           return next;
@@ -548,9 +548,9 @@ export function VoiceWidget() {
     status === "recording"
       ? "Stop recording and send"
       : status === "thinking"
-        ? "Alex is processing your message"
+        ? "Aura is processing your message"
         : status === "speaking"
-          ? "Interrupt Alex and start recording"
+          ? "Interrupt Aura and start recording"
           : open
             ? "Start recording a voice message"
             : "Open voice support";
@@ -559,10 +559,10 @@ export function VoiceWidget() {
     status === "recording"
       ? "Listening… tap the mic to send"
       : status === "thinking"
-        ? "Alex is thinking…"
+        ? "Aura is thinking…"
         : status === "speaking"
-          ? "Tap the mic to interrupt Alex"
-          : "Tap the mic to talk to Alex";
+          ? "Tap the mic to interrupt Aura"
+          : "Tap the mic to talk to Aura";
 
   return (
     <>
@@ -604,7 +604,7 @@ export function VoiceWidget() {
           ref={panelRef}
           tabIndex={-1}
           role="dialog"
-          aria-label="Alex voice support"
+          aria-label="Aura voice support"
           className="fixed bottom-24 right-5 z-50 flex max-h-[calc(100dvh-7.5rem)] w-[calc(100vw-2.5rem)] max-w-sm flex-col rounded-3xl bg-white p-4 shadow-[0_24px_48px_-24px_rgba(15,42,74,0.35)] outline-none ring-1 ring-navy/[0.08]"
         >
           <div className="flex items-center gap-3 border-b border-navy/[0.06] pb-3">
@@ -612,14 +612,14 @@ export function VoiceWidget() {
               A
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-navy">Alex</p>
+              <p className="text-sm font-semibold text-navy">Aura</p>
               <p className="text-xs text-slate-500">{statusLabel}</p>
             </div>
             <button
               type="button"
               onClick={() => setMuted((value) => !value)}
               aria-pressed={muted}
-              aria-label={muted ? "Unmute Alex" : "Mute Alex"}
+              aria-label={muted ? "Unmute Aura" : "Mute Aura"}
               className="rounded-full p-2 text-slate-500 outline-none transition-colors hover:bg-mist hover:text-navy focus-visible:ring-4 focus-visible:ring-accent/30"
             >
               <SpeakerIcon muted={muted} />
@@ -643,7 +643,7 @@ export function VoiceWidget() {
               <li
                 key={message.id}
                 className={
-                  message.role === "alex"
+                  message.role === "aura"
                     ? "max-w-[85%] self-start rounded-2xl rounded-bl-sm bg-mist px-3.5 py-2 text-sm leading-snug text-navy"
                     : "max-w-[85%] self-end rounded-2xl rounded-br-sm bg-navy px-3.5 py-2 text-sm leading-snug text-white"
                 }
@@ -653,7 +653,7 @@ export function VoiceWidget() {
             ))}
             {status === "thinking" && (
               <li className="flex w-fit items-center gap-1.5 rounded-2xl rounded-bl-sm bg-mist px-4 py-3">
-                <span className="sr-only">Alex is thinking</span>
+                <span className="sr-only">Aura is thinking</span>
                 <span
                   className="size-1.5 rounded-full bg-navy/40 motion-safe:animate-bounce"
                   style={{ animationDelay: "0ms" }}
