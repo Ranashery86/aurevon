@@ -8,10 +8,14 @@ import { CreditsDonut } from "@/components/credits-donut";
 export default async function DashboardHomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ payment?: string }>;
+  searchParams: Promise<{ payment?: string; plan?: string }>;
 }) {
-  const { payment } = await searchParams;
+  const { payment, plan: purchasedPlanId } = await searchParams;
   const paymentSuccess = payment === "success";
+  const purchasedPlan =
+    typeof purchasedPlanId === "string" && purchasedPlanId
+      ? purchasedPlanId
+      : null;
 
   const supabase = await createClient();
   const { data: claims } = await supabase.auth.getClaims();
@@ -57,7 +61,12 @@ export default async function DashboardHomePage({
   );
   const remainingCredits = balance;
 
-  const paymentPending = paymentSuccess && !sub;
+  // Keep the "activating" poller up until the webhook has applied the
+  // purchased plan (not just until any subscription row exists), so the
+  // success banner never shows before the plan and credits are in the DB.
+  const paymentPending =
+    paymentSuccess &&
+    (!sub || (purchasedPlan !== null && sub.plan_id !== purchasedPlan));
 
   const progressPercent =
     totalCredits > 0 ? Math.min(100, Math.round((usedCredits / totalCredits) * 100)) : 0;
@@ -128,7 +137,7 @@ export default async function DashboardHomePage({
             </p>
           </div>
           <Link
-            href="/pricing"
+            href="/dashboard/upgrade"
             className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent/30 transition-colors hover:bg-accent-deep"
           >
             Upgrade Plan

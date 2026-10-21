@@ -13,7 +13,10 @@ function getRequestOrigin(request: Request): string {
 }
 
 export async function POST(request: Request) {
-  const { planId } = await request.json().catch(() => ({}));
+  // `flow` is only ever compared against a literal, so a client sending an
+  // unexpected value can at worst fall back to the default (signup) return URLs.
+  const { planId, flow } = await request.json().catch(() => ({}));
+  const isUpgradeFlow = flow === "upgrade";
 
   if (!planId) {
     return Response.json({ error: "Missing plan_id" }, { status: 400 });
@@ -49,6 +52,34 @@ export async function POST(request: Request) {
     );
   }
 
+  // Mirror the webhook's idempotency rule: it skips granting credits when this
+  // user already has a plan_purchase row for this plan's monthly_credits.
+  // Rejecting here stops us from charging a customer for something the webhook
+  // would silently not grant (e.g. re-buying a plan they've owned before).
+  const { data: priorGrant, error: priorGrantError } = await admin
+    .from("credit_transactions")
+    .select("id")
+    .eq("uuid", userId)
+    .eq("type", "plan_purchase")
+    .eq("amount", plan.monthly_credits)
+    .maybeSingle();
+
+  if (priorGrantError) {
+    console.error("[checkout] duplicate-credit check failed:", priorGrantError.message);
+    return Response.json({ error: "Failed to validate your current plan" }, { status: 500 });
+  }
+
+  if (priorGrant) {
+    return Response.json(
+      {
+        error:
+          `This account has already received this plan's ${plan.monthly_credits} credits — ` +
+          `please choose a different plan.`,
+      },
+      { status: 400 }
+    );
+  }
+
   const {
     data: { user },
   } = await admin.auth.admin.getUserById(userId);
@@ -78,8 +109,12 @@ export async function POST(request: Request) {
           },
         },
       ],
-      success_url: `${origin}/dashboard?payment=success`,
-      cancel_url: `${origin}/pricing?payment=cancelled`,
+      // `plan` lets the dashboard keep the "activating…" state until the
+      // webhook has actually applied this plan to the account.
+      success_url: `${origin}/dashboard?payment=success&plan=${encodeURIComponent(planId)}`,
+      cancel_url: isUpgradeFlow
+        ? `${origin}/dashboard/upgrade?cancelled=1`
+        : `${origin}/pricing?payment=cancelled`,
       customer_email: user?.email,
       metadata: {
         user_id: userId,

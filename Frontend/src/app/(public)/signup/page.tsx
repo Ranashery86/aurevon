@@ -6,13 +6,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { site } from "@/lib/site";
 import { logoMark, muted } from "@/lib/ui";
-
-type Plan = {
-  id: string;
-  name: string;
-  price: number;
-  monthly_credits: number;
-};
+import { PlanCards, type Plan } from "@/components/plan-cards";
 
 function queryPlanId(): string | null {
   if (typeof window === "undefined") return null;
@@ -242,35 +236,11 @@ export default function SignupPage() {
             ) : plans.length === 0 ? (
               <p className="mt-3 text-sm text-slate-400">Loading plans…</p>
             ) : (
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                {plans.map((plan) => {
-                  const active = plan.id === selectedPlanId;
-                  const isFree = Number(plan.price) === 0;
-                  return (
-                    <button
-                      key={plan.id}
-                      type="button"
-                      onClick={() => setSelectedPlanId(plan.id)}
-                      aria-pressed={active}
-                      className={`rounded-2xl border px-4 py-3 text-left transition-all duration-150 ${
-                        active
-                          ? "border-accent bg-accent/5 ring-2 ring-accent/30"
-                          : "border-navy/10 bg-white hover:border-accent/40 hover:bg-mist/40"
-                      }`}
-                    >
-                      <span className="block text-sm font-bold text-navy">
-                        {plan.name}
-                      </span>
-                      <span className="mt-0.5 block text-xs font-semibold text-navy/80">
-                        {isFree ? "Free" : `$${Number(plan.price)}/month`}
-                      </span>
-                      <span className="mt-0.5 block text-xs text-slate-500">
-                        {plan.monthly_credits} credits / month
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+              <PlanCards
+                plans={plans}
+                selectedPlanId={selectedPlanId}
+                onSelect={setSelectedPlanId}
+              />
             )}
           </div>
         )}
