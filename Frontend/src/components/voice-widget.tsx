@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { Noto_Naskh_Arabic } from "next/font/google";
 
 type Status = "idle" | "recording" | "thinking" | "speaking";
 
@@ -25,6 +26,30 @@ const MIME_TYPE_CANDIDATES = [
   "audio/webm",
   "audio/mp4",
 ];
+const SILENT_MP3_DATA_URI =
+  "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//uQxAAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV";
+const ARABIC_SCRIPT_PATTERN = /[\u0600-\u06FF]/;
+
+const urduFont = Noto_Naskh_Arabic({
+  subsets: ["arabic"],
+  weight: ["400", "700"],
+  display: "swap",
+  variable: "--font-urdu",
+});
+
+function containsArabicScript(text: string): boolean {
+  return ARABIC_SCRIPT_PATTERN.test(text);
+}
+
+function base64ToBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return buffer;
+}
 
 function getSessionId(): string {
   try {
@@ -161,6 +186,9 @@ export function VoiceWidget() {
   const autoStopTimerRef = useRef<number | null>(null);
   const discardRef = useRef(false);
   const speechUnlockedRef = useRef(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const audioUnlockedRef = useRef(false);
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const messageIdRef = useRef(1);
   const micButtonRef = useRef<HTMLButtonElement>(null);
@@ -192,7 +220,77 @@ export function VoiceWidget() {
     );
   }, []);
 
-  const speak = useCallback(
+  const ensureAudioElement = useCallback((): HTMLAudioElement | null => {
+    if (typeof window === "undefined" || typeof Audio === "undefined") {
+      return null;
+    }
+    if (!audioRef.current) {
+      const element = new Audio();
+      element.preload = "auto";
+      audioRef.current = element;
+    }
+    return audioRef.current;
+  }, []);
+
+  const releaseAudioUrl = useCallback(() => {
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }, []);
+
+  const haltAudio = useCallback(() => {
+    const element = audioRef.current;
+    if (element) {
+      element.onended = null;
+      element.onerror = null;
+      try {
+        element.pause();
+        element.currentTime = 0;
+      } catch {
+        // audio element unavailable
+      }
+      try {
+        element.removeAttribute("src");
+        element.load();
+      } catch {
+        // audio element unavailable
+      }
+    }
+    releaseAudioUrl();
+  }, [releaseAudioUrl]);
+
+  const unlockAudio = useCallback(() => {
+    if (audioUnlockedRef.current) return;
+    const element = ensureAudioElement();
+    if (!element) return;
+    audioUnlockedRef.current = true;
+    try {
+      element.src = SILENT_MP3_DATA_URI;
+      element.volume = 0;
+      const finish = () => {
+        try {
+          if (element.src.startsWith("data:")) {
+            element.pause();
+            element.currentTime = 0;
+          }
+        } catch {
+          // audio element unavailable
+        }
+        element.volume = 1;
+      };
+      const attempt = element.play();
+      if (attempt && typeof attempt.then === "function") {
+        attempt.then(finish).catch(finish);
+      } else {
+        finish();
+      }
+    } catch {
+      element.volume = 1;
+    }
+  }, [ensureAudioElement]);
+
+  const speakWithBrowser = useCallback(
     (text: string) => {
       const synth =
         typeof window !== "undefined" ? window.speechSynthesis : undefined;
@@ -215,6 +313,62 @@ export function VoiceWidget() {
       synth.speak(utterance);
     },
     [pickEnglishVoice, setStatus],
+  );
+
+  const playReply = useCallback(
+    (
+      text: string,
+      lang: "en" | "ur",
+      audio: string | null,
+      audioMime: string | null,
+    ) => {
+      if (mutedRef.current) {
+        setStatus("idle");
+        return;
+      }
+      const fallback = () => {
+        if (lang === "en") {
+          speakWithBrowser(text);
+        } else if (statusRef.current === "speaking") {
+          setStatus("idle");
+        }
+      };
+      const element = audio ? ensureAudioElement() : null;
+      if (audio && element) {
+        try {
+          const buffer = base64ToBuffer(audio);
+          const blob = new Blob([buffer], {
+            type: audioMime || "audio/wav",
+          });
+          element.onended = () => {
+            releaseAudioUrl();
+            if (statusRef.current === "speaking") setStatus("idle");
+          };
+          element.onerror = () => {
+            haltAudio();
+            fallback();
+          };
+          const nextUrl = URL.createObjectURL(blob);
+          element.src = nextUrl;
+          if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = nextUrl;
+          element.volume = 1;
+          setStatus("speaking");
+          const attempt = element.play();
+          if (attempt && typeof attempt.then === "function") {
+            attempt.catch(() => {
+              haltAudio();
+              fallback();
+            });
+          }
+          return;
+        } catch {
+          haltAudio();
+        }
+      }
+      fallback();
+    },
+    [ensureAudioElement, haltAudio, releaseAudioUrl, setStatus, speakWithBrowser],
   );
 
   const sendAudio = useCallback(
@@ -242,6 +396,9 @@ export function VoiceWidget() {
         const data = (await response.json().catch(() => null)) as {
           transcript?: unknown;
           reply?: unknown;
+          lang?: unknown;
+          audio?: unknown;
+          audioMime?: unknown;
         } | null;
         if (
           !response.ok ||
@@ -252,6 +409,16 @@ export function VoiceWidget() {
         }
         const transcript =
           typeof data.transcript === "string" ? data.transcript.trim() : "";
+        const reply = data.reply;
+        const lang = data.lang === "ur" ? "ur" : "en";
+        const audio =
+          typeof data.audio === "string" && data.audio ? data.audio : null;
+        const audioMime =
+          audio && typeof data.audioMime === "string"
+            ? data.audioMime
+            : audio
+              ? "audio/wav"
+              : null;
         setMessages((prev) => {
           const next = [...prev];
           if (transcript) {
@@ -264,12 +431,12 @@ export function VoiceWidget() {
           next.push({
             id: messageIdRef.current++,
             role: "aura",
-            text: data.reply as string,
+            text: reply,
           });
           return next;
         });
         setOpen(true);
-        speak(data.reply);
+        playReply(reply, lang, audio, audioMime);
       } catch {
         setNotice(ERROR_MESSAGE);
         setStatus("idle");
@@ -277,7 +444,7 @@ export function VoiceWidget() {
         window.clearTimeout(timer);
       }
     },
-    [setStatus, speak],
+    [playReply, setStatus],
   );
 
   const handleRecorderStop = useCallback(() => {
@@ -320,7 +487,12 @@ export function VoiceWidget() {
       return;
     }
 
-    window.speechSynthesis?.cancel();
+    haltAudio();
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // speechSynthesis unavailable
+    }
     if (statusRef.current === "speaking") setStatus("idle");
 
     let stream: MediaStream;
@@ -371,7 +543,7 @@ export function VoiceWidget() {
       }
     }, MAX_RECORDING_MS);
     setStatus("recording");
-  }, [handleRecorderStop, setStatus]);
+  }, [haltAudio, handleRecorderStop, setStatus]);
 
   const stopRecording = useCallback(
     (discard: boolean) => {
@@ -391,15 +563,20 @@ export function VoiceWidget() {
     [clearAutoStopTimer, handleRecorderStop],
   );
 
-  const abortActivity = useCallback(() => {
+  const stopSpeaking = useCallback(() => {
+    haltAudio();
     try {
       window.speechSynthesis?.cancel();
     } catch {
       // speechSynthesis unavailable
     }
     if (statusRef.current === "speaking") setStatus("idle");
+  }, [haltAudio, setStatus]);
+
+  const abortActivity = useCallback(() => {
+    stopSpeaking();
     stopRecording(true);
-  }, [setStatus, stopRecording]);
+  }, [stopSpeaking, stopRecording]);
 
   const unlockSpeech = useCallback(() => {
     if (speechUnlockedRef.current) return;
@@ -413,6 +590,7 @@ export function VoiceWidget() {
 
   const handleMicClick = () => {
     unlockSpeech();
+    unlockAudio();
     const current = statusRef.current;
 
     if (current === "recording") {
@@ -421,12 +599,7 @@ export function VoiceWidget() {
     }
     if (current === "thinking") return;
     if (current === "speaking") {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // speechSynthesis unavailable
-      }
-      setStatus("idle");
+      stopSpeaking();
       void startRecording();
       return;
     }
@@ -437,6 +610,13 @@ export function VoiceWidget() {
     }
     void startRecording();
   };
+
+  const toggleMute = useCallback(() => {
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    if (next) stopSpeaking();
+  }, [stopSpeaking]);
 
   const closePanel = useCallback(() => {
     abortActivity();
@@ -508,6 +688,7 @@ export function VoiceWidget() {
   useEffect(() => {
     return () => {
       discardRef.current = true;
+      haltAudio();
       try {
         window.speechSynthesis?.cancel();
       } catch {
@@ -527,7 +708,7 @@ export function VoiceWidget() {
         }
       }
     };
-  }, []);
+  }, [haltAudio]);
 
   useEffect(() => {
     mutedRef.current = muted;
@@ -617,7 +798,7 @@ export function VoiceWidget() {
             </div>
             <button
               type="button"
-              onClick={() => setMuted((value) => !value)}
+              onClick={toggleMute}
               aria-pressed={muted}
               aria-label={muted ? "Unmute Aura" : "Mute Aura"}
               className="rounded-full p-2 text-slate-500 outline-none transition-colors hover:bg-mist hover:text-navy focus-visible:ring-4 focus-visible:ring-accent/30"
@@ -634,23 +815,38 @@ export function VoiceWidget() {
             </button>
           </div>
 
+          <p className="pt-2 text-xs text-slate-500">
+            Speak in English or Urdu
+          </p>
+
           <ul
             ref={scrollRef}
             aria-live="polite"
             className="flex min-h-32 flex-1 flex-col gap-2.5 overflow-y-auto overscroll-contain py-3"
           >
-            {messages.map((message) => (
-              <li
-                key={message.id}
-                className={
-                  message.role === "aura"
-                    ? "max-w-[85%] self-start rounded-2xl rounded-bl-sm bg-mist px-3.5 py-2 text-sm leading-snug text-navy"
-                    : "max-w-[85%] self-end rounded-2xl rounded-br-sm bg-navy px-3.5 py-2 text-sm leading-snug text-white"
-                }
-              >
-                {message.text}
-              </li>
-            ))}
+            {messages.map((message) => {
+              const isRtl = containsArabicScript(message.text);
+              const roleClass =
+                message.role === "aura"
+                  ? "max-w-[85%] self-start rounded-2xl rounded-bl-sm bg-mist px-3.5 py-2 text-sm leading-snug text-navy"
+                  : "max-w-[85%] self-end rounded-2xl rounded-br-sm bg-navy px-3.5 py-2 text-sm leading-snug text-white";
+              return (
+                <li
+                  key={message.id}
+                  dir={isRtl ? "rtl" : undefined}
+                  lang={isRtl ? "ur" : undefined}
+                  className={[
+                    roleClass,
+                    isRtl ? "text-right" : "",
+                    isRtl ? urduFont.className : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                >
+                  {message.text}
+                </li>
+              );
+            })}
             {status === "thinking" && (
               <li className="flex w-fit items-center gap-1.5 rounded-2xl rounded-bl-sm bg-mist px-4 py-3">
                 <span className="sr-only">Aura is thinking</span>

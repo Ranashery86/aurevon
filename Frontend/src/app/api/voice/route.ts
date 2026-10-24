@@ -1,10 +1,16 @@
 import type { NextRequest } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 const MAX_SESSION_ID_LENGTH = 100;
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const N8N_TIMEOUT_MS = 30_000;
+const N8N_TIMEOUT_MS = 45_000;
+const MAX_AUDIO_BASE64_LENGTH = 3_500_000;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+const ARABIC_SCRIPT_PATTERN = /[\u0600-\u06FF]/;
 const N8N_ERROR_RESPONSE = { error: "Voice service is temporarily unavailable." };
 const N8N_TIMEOUT_RESPONSE = { error: "Voice service timed out." };
 
@@ -40,6 +46,18 @@ function isRateLimited(ip: string): boolean {
 function isAllowedAudioType(contentType: string): boolean {
   const type = contentType.toLowerCase();
   return type.startsWith("audio/") || type === "video/webm";
+}
+
+function sanitizeBase64Audio(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (!value || value.length > MAX_AUDIO_BASE64_LENGTH) return null;
+  if (value.length % 4 !== 0 || !BASE64_PATTERN.test(value)) return null;
+  return value;
+}
+
+function resolveAudioMime(audio: string, value: unknown): string {
+  if (value === "audio/wav" || value === "audio/mpeg") return value;
+  return audio.startsWith("UklGR") ? "audio/wav" : "audio/mpeg";
 }
 
 export async function POST(request: NextRequest) {
@@ -120,16 +138,35 @@ export async function POST(request: NextRequest) {
   const payload = (await n8nResponse.json().catch(() => null)) as {
     transcript?: unknown;
     reply?: unknown;
+    lang?: unknown;
+    audio?: unknown;
+    audioMime?: unknown;
   } | null;
 
-  if (
-    !payload ||
-    typeof payload.transcript !== "string" ||
-    typeof payload.reply !== "string"
-  ) {
+  if (!payload || typeof payload !== "object") {
     console.error("[voice] n8n returned an unexpected payload");
     return Response.json(N8N_ERROR_RESPONSE, { status: 502 });
   }
 
-  return Response.json({ transcript: payload.transcript, reply: payload.reply });
+  const transcript =
+    typeof payload.transcript === "string" ? payload.transcript : "";
+  const reply = typeof payload.reply === "string" ? payload.reply : "";
+
+  const payloadLang =
+    payload.lang === "ur" || payload.lang === "en" ? payload.lang : null;
+  const lang =
+    payloadLang ?? (ARABIC_SCRIPT_PATTERN.test(reply) ? "ur" : "en");
+
+  const audioBase64 = sanitizeBase64Audio(payload.audio);
+  const audioMime = audioBase64
+    ? resolveAudioMime(audioBase64, payload.audioMime)
+    : null;
+
+  return Response.json({
+    transcript,
+    reply,
+    lang,
+    audio: audioBase64,
+    audioMime,
+  });
 }
